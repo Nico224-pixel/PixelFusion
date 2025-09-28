@@ -13,7 +13,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes 
 
 # Importa tus utilidades y handlers
-from handlers import start, style_selected, dithering_colors_selected, photo_handler
+from handlers import start, style_selected, dithering_colors_selected, photo_handler, show_credits # <<< AÑADIDO: show_credits
 from db_utils import get_firestore_client 
 from PIL import Image
 
@@ -21,7 +21,8 @@ from PIL import Image
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 MAX_FREE_CREDITS = 10 
 WATERMARK_TEXT = "PIXELADO GRATIS | @PixelFusionBot"
-MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024 # 5 MB
+# *** CAMBIADO ***: Reducir el límite de tamaño de imagen a 2 MB
+MAX_IMAGE_SIZE_BYTES = 2 * 1024 * 1024 
 
 # ==========================================================
 # FUNCIÓN DEL SERVIDOR DUMMY PARA RENDER (¡LA CLAVE!)
@@ -33,15 +34,12 @@ def run_dummy_server():
     pueda detectar un puerto abierto y mantener el Web Service activo.
     """
     try:
-        # Render asigna el puerto a través de la variable de entorno PORT
-        # Es crucial usar 'PORT' aquí
         port = int(os.environ.get("PORT", 8080))
     except ValueError:
         port = 8080
 
     class HealthCheckHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            # Responde con un simple 200 OK para el chequeo de Render
             self.send_response(200)
             self.send_header('Content-type', 'text/plain')
             self.end_headers()
@@ -50,7 +48,6 @@ def run_dummy_server():
     try:
         httpd = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
         print(f"*** Dummy HTTP server running on port {port} for Render Health Check. ***")
-        # El servidor se inicia en el hilo actual, que será el hilo separado por 'threading'
         httpd.serve_forever()
     except Exception as e:
         print(f"Error starting dummy server: {e}")
@@ -77,7 +74,7 @@ finally:
 
 # --- HANDLER DE PRUEBA: Recargar créditos (Mantenido) ---
 async def buy_credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (Tu lógica de buy_credits se mantiene igual)
+    # Lógica de simulación para añadir créditos
     db = get_firestore_client()
     user_id = update.message.from_user.id
 
@@ -85,7 +82,6 @@ async def buy_credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ La base de datos no está disponible. No se puede recargar.")
         return
 
-    # SIMULACIÓN: Añadir 5 créditos
     CREDITS_TO_ADD = 5
     user_ref = db.collection('users').document(str(user_id))
 
@@ -107,7 +103,6 @@ if __name__ == '__main__':
     print("Bot reiniciado.")
 
     # 1. INICIA EL SERVIDOR DUMMY EN UN HILO SEPARADO
-    # Esto debe hacerse ANTES de app.run_polling()
     threading.Thread(target=run_dummy_server, daemon=True).start()
     
     # 2. CONFIGURACIÓN E INICIO DEL BOT
@@ -119,9 +114,16 @@ if __name__ == '__main__':
     # 3. Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("buycredits", buy_credits))
+    app.add_handler(CommandHandler("saldo", show_credits)) # <<< AÑADIDO: Handler de saldo
     app.add_handler(CallbackQueryHandler(dithering_colors_selected, pattern="^(8|16|32)$"))
     app.add_handler(CallbackQueryHandler(style_selected, pattern="^(?![8|16|32]$).+"))
+    
+    # El photo_handler ahora requiere que el usuario haya seleccionado un estilo primero
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+    # Maneja texto/stickers inesperados (Mejora de UX)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, 
+                                   lambda update, context: update.message.reply_text("🤔 Por favor, usa /start para elegir un estilo o envíame una foto para pixelar.")))
+
 
     # 4. INICIA EL LONG POLLING EN EL HILO PRINCIPAL
     print("*** Starting Telegram Bot Long Polling... ***")
