@@ -1,4 +1,4 @@
-# handlers.py (VERSIÓN FINAL Y CORREGIDA: Eliminada redundancia en mensaje final)
+# handlers.py (VERSIÓN FINAL Y CORREGIDA)
 
 import logging
 from io import BytesIO
@@ -117,6 +117,7 @@ async def buy_credits_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     user_ref = db.collection('users').document(str(user_id))
 
     try:
+        # *** CORRECCIÓN CRUCIAL: Sumar a 'paid_credits' ***
         user_ref.update({'paid_credits': firestore.Increment(CREDITS_TO_ADD)})
         
         MAX_FREE_CREDITS = context.application.bot_data.get('MAX_FREE_CREDITS', 10)
@@ -229,6 +230,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         paid_credits = user_data.get('paid_credits', 0)
         total_credits_remaining = 0
 
+        # Mensaje de advertencia inicial (antes de procesar la foto)
         await msg.reply_text(
             f"😔 **¡Créditos agotados!** Tu imagen se procesará, pero se le añadirá una **marca de agua**."
             f"\n\n✨ Tienes {free_credits + paid_credits} créditos totales. Usa /buycredits para recargar.",
@@ -275,8 +277,9 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not apply_wm:
         caption += f"\n\n💰 Te queda un saldo de **{total_credits_remaining}** créditos.\n(Gratuitos: {free_credits}, Comprados: {paid_credits})"
     else:
-         # *** LÍNEA CORREGIDA PARA ENFOCARSE EN LA COMPRA ***
+         # *** CORRECCIÓN FINAL: Solo menciona /buycredits para recargar ***
          caption += "\n\n✨ Generada con marca de agua. ¡Recarga con **/buycredits** para quitársela!"
+
 
     await msg.reply_photo(photo=out_bytes, 
                           caption=caption, 
