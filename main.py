@@ -20,7 +20,8 @@ from db_utils import get_firestore_client
 # --- CONSTANTES ---
 TOKEN: Final = os.environ.get("TELEGRAM_BOT_TOKEN")
 MAX_FREE_CREDITS: Final = 10 
-WATERMARK_TEXT: Final = "PIXELADO GRATIS | @PixelFusionBot"
+# CAMBIO A INGLÉS
+WATERMARK_TEXT: Final = "FREE PIXELATION | @PixelFusionBot" 
 MAX_IMAGE_SIZE_BYTES: Final = 2 * 1024 * 1024 # 2 MB
 
 # ==========================================================
@@ -103,8 +104,9 @@ if __name__ == '__main__':
     
     # 6. Handlers de Mensajes
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+    # CAMBIO A INGLÉS
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, 
-                                   lambda update, context: update.message.reply_text("🤔 Por favor, usa /start para elegir un estilo o envíame una foto para pixelar.")))
+                                   lambda update, context: update.message.reply_text("🤔 Please use /start to choose a style or send me a photo to pixelate.")))
 
 
     # 7. INICIA EL LONG POLLING EN EL HILO PRINCIPAL
