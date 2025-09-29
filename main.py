@@ -14,16 +14,18 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes 
 
 # Importa tus utilidades y handlers
-from handlers import start, style_selected, dithering_colors_selected, photo_handler, show_credits, buy_credits_callback, help_command 
+from handlers import start, style_selected, dithering_colors_selected, photo_handler, show_credits, buy_credits_callback, help_command, paypal_confirm_callback 
 from db_utils import get_firestore_client 
 
 
 # --- CONSTANTES ---
 TOKEN: Final = os.environ.get("TELEGRAM_BOT_TOKEN")
-MAX_FREE_CREDITS: Final = 10 
+MAX_FREE_CREDITS: Final = 5 
 # CAMBIO A INGLÉS
 WATERMARK_TEXT: Final = "FREE PIXELATION | @PixelFusionBot" 
 MAX_IMAGE_SIZE_BYTES: Final = 2 * 1024 * 1024 # 2 MB
+PAYPAL_CLIENT_ID: Final = os.environ.get("PAYPAL_CLIENT_ID", "SIMULATED_ID")
+PAYPAL_CLIENT_SECRET: Final = os.environ.get("PAYPAL_CLIENT_SECRET", "SIMULATED_SECRET")
 
 # ==========================================================
 # FUNCIÓN DEL SERVIDOR DUMMY PARA RENDER (NECESARIO)
@@ -87,6 +89,8 @@ if __name__ == '__main__':
     app.bot_data['MAX_FREE_CREDITS'] = MAX_FREE_CREDITS
     app.bot_data['WATERMARK_TEXT'] = WATERMARK_TEXT
     app.bot_data['MAX_IMAGE_SIZE_BYTES'] = MAX_IMAGE_SIZE_BYTES
+    app.bot_data['PAYPAL_CLIENT_ID'] = PAYPAL_CLIENT_ID
+    app.bot_data['PAYPAL_CLIENT_SECRET'] = PAYPAL_CLIENT_SECRET
 
     # 3. Handlers de comandos
     app.add_handler(CommandHandler("start", start))
@@ -98,6 +102,7 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(show_credits, pattern="^show_credits$"))        
     app.add_handler(CallbackQueryHandler(buy_credits_callback, pattern="^buy_credits_[0-9]+$")) 
     app.add_handler(CallbackQueryHandler(start, pattern="^start$"))                      
+    app.add_handler(CallbackQueryHandler(paypal_confirm_callback, pattern="^paypal_confirm_[0-9]+_[0-9]+$"))
 
     # 5. Callbacks para Estilos
     app.add_handler(CallbackQueryHandler(dithering_colors_selected, pattern="^(8|16|32)$"))

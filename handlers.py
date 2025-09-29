@@ -1,4 +1,4 @@
-# handlers.py (VERSIÓN FINAL Y CORREGIDA EN INGLÉS)
+# handlers.py (Modificado)
 
 import logging
 from io import BytesIO
@@ -13,11 +13,12 @@ from firebase_admin import firestore
 # --- PURCHASE CONSTANT ---
 # {price_usd: credits_to_add}
 PURCHASE_OPTIONS = {
-    "5": 5,    # $5 USD -> 5 Credits
-    "8": 10    # $8 USD -> 10 Credits
+    "2.5": 5,    # $5 USD -> 5 Credits
+    "4": 10    # $8 USD -> 10 Credits
 }
 
 # --- Auxiliary Function for Safe Editing (Handling BadRequest) ---
+# ... (safe_edit sin cambios) ...
 async def safe_edit(query, text, markup=None, parse_mode="Markdown"):
     """Attempts to edit the message text, using the caption as a fallback if it fails. Accepts the keyboard as 'markup'."""
     try:
@@ -35,6 +36,7 @@ async def safe_edit(query, text, markup=None, parse_mode="Markdown"):
         logging.error(f"Unknown error in safe_edit: {e}")
 
 # --- Interface Helper: Style Menu ---
+# ... (get_style_keyboard sin cambios) ...
 def get_style_keyboard():
     """Generates the keyboard ONLY for style selection, WITHOUT balance buttons."""
     keyboard = [[InlineKeyboardButton(name.upper(), callback_data=name)] for name in STYLE_DEFAULTS.keys()]
@@ -53,11 +55,42 @@ def get_purchase_options_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
+# --- Auxiliary: Simula la generación de un enlace de pago de PayPal ---
+def simulate_paypal_link(user_id: int, price: str, credits: int) -> InlineKeyboardMarkup:
+    """
+    Simula la generación de un enlace de pago de PayPal. 
+    En un entorno real, esto llamaría a la API de PayPal.
+    Aquí, retorna un enlace a un callback del bot para simular la confirmación.
+    """
+    
+    # 1. El botón de pago real que llevaría a PayPal
+    # En un caso real: link_pago = get_paypal_order_link(...)
+    # Lo simulamos con una URL ficticia
+    paypal_link_url = "https://www.sandbox.paypal.com/checkout" 
+
+    # 2. El botón de 'confirmación' que el usuario pulsaría tras 'pagar' en PayPal
+    # Usamos un callback para simular el retorno del pago, pasando precio y créditos
+    confirm_callback_data = f"paypal_confirm_{price}_{credits}"
+    
+    keyboard = [
+        [
+            InlineKeyboardButton(f"Pagar {price} USD con PayPal 🚀", url=paypal_link_url)
+        ],
+        [
+            # Simulación de la confirmación de PayPal (SOLO PARA DEMO/PRUEBAS)
+            InlineKeyboardButton("✅ Simulacro de Confirmación de Pago", callback_data=confirm_callback_data)
+        ],
+        [
+            InlineKeyboardButton("⬅️ Volver al Saldo", callback_data="show_credits")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 # ==========================================================
 # 1. MAIN COMMANDS AND CALLBACKS
 # ==========================================================
 
+# ... (start sin cambios) ...
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows the greeting, the balance (in the text), and the style buttons."""
     if update.callback_query:
@@ -83,6 +116,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(saldo_msg, reply_markup=get_style_keyboard(), parse_mode="Markdown")
 
 
+# ... (show_credits sin cambios) ...
 async def show_credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows the detailed user balance (/balance command or CALLBACK button)."""
     
@@ -113,21 +147,53 @@ async def show_credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(saldo_msg, reply_markup=get_purchase_options_keyboard(), parse_mode="Markdown")
 
 async def buy_credits_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Simulated purchase of credits from a button callback."""
+    """Genera el enlace de pago simulado de PayPal."""
     query = update.callback_query
-    
-    # Extract the price from callback_data (e.g., 'buy_credits_5' -> '5')
+    await query.answer()
+
+    # Extraer el precio y los créditos de callback_data (e.g., 'buy_credits_5' -> '5')
     price_str = query.data.split('_')[-1]
-    
-    # Get the amount of credits to add, using the options dictionary
     CREDITS_TO_ADD = PURCHASE_OPTIONS.get(price_str, 0)
     
     if CREDITS_TO_ADD == 0:
         await query.answer("❌ Invalid purchase option.", show_alert=True) # TRANSLATED
         return
 
-    await query.answer(f"Processing simulated purchase of {price_str} USD...") # TRANSLATED
+    user_id = query.from_user.id
     
+    # Simular la generación del enlace/botón de pago de PayPal
+    markup = simulate_paypal_link(user_id, price_str, CREDITS_TO_ADD)
+
+    # TRANSLATED MESSAGES
+    payment_msg = (
+        f"🛒 **Confirm your purchase:**\n\n"
+        f"**Item:** {CREDITS_TO_ADD} Credits\n"
+        f"**Price:** {price_str} USD\n\n"
+        "Click on the PayPal button to proceed with the payment."
+    )
+    
+    await safe_edit(query, payment_msg, markup=markup, parse_mode="Markdown")
+
+
+async def paypal_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    SIMULACIÓN de la confirmación de pago de PayPal. 
+    En un entorno real, esto se manejaría mediante un Webhook (IPN).
+    """
+    query = update.callback_query
+    await query.answer("Processing payment confirmation...") # TRANSLATED
+
+    # El patrón es 'paypal_confirm_{price}_{credits}'
+    try:
+        _, _, price_str, credits_str = query.data.split('_')
+        CREDITS_TO_ADD = int(credits_str)
+        price = price_str
+    except Exception as e:
+        logging.error(f"Error parsing paypal_confirm data: {e}")
+        await query.answer("❌ Error processing confirmation data.", show_alert=True)
+        await safe_edit(query, "❌ Error processing the payment confirmation. Please try again or contact support.")
+        return
+
     db = get_firestore_client()
     user_id = query.from_user.id
 
@@ -138,6 +204,8 @@ async def buy_credits_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     user_ref = db.collection('users').document(str(user_id))
 
     try:
+        # AQUI SE HARÍA LA VERIFICACIÓN REAL DEL PAGO EN PRODUCCIÓN.
+        # En la simulación, simplemente actualizamos el saldo:
         user_ref.update({'paid_credits': firestore.Increment(CREDITS_TO_ADD)})
         
         MAX_FREE_CREDITS = context.application.bot_data.get('MAX_FREE_CREDITS', 10)
@@ -145,18 +213,18 @@ async def buy_credits_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         
         # TRANSLATED MESSAGES
         saldo_msg = (
-            f"✅ Simulated purchase successful! **{CREDITS_TO_ADD}** credits have been added to your account for **{price_str} USD**.\n\n"
+            f"✅ Payment successful! **{CREDITS_TO_ADD}** credits have been added to your account for **{price} USD**.\n\n"
             f"   - **New Total Balance:** **{user_data_after.get('total_credits', 0)}** credits.\n"
             "Use them to generate watermark-free images."
         )
         await safe_edit(query, saldo_msg, markup=get_purchase_options_keyboard(), parse_mode="Markdown")
         
     except Exception as e:
-        logging.error(f"Error simulating credit recharge: {e}")
-        await safe_edit(query, "❌ Error updating your balance. Please try again.") # TRANSLATED
+        logging.error(f"Error simulating credit recharge after 'PayPal confirmation': {e}")
+        await safe_edit(query, "❌ Error updating your balance after payment. Please try again.") # TRANSLATED
 
-# ... (The rest of the handlers, without changes) ...
 
+# ... (style_selected sin cambios) ...
 async def style_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the initial style selection."""
     query = update.callback_query
@@ -187,6 +255,7 @@ async def style_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "🎨 **Dithering** selected. How many colors do you want to use?", 
                         markup=reply_markup)
 
+# ... (help_command sin cambios) ...
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows the list of available commands and their brief description."""
     
@@ -202,6 +271,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
+# ... (dithering_colors_selected sin cambios) ...
 async def dithering_colors_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the selection of colors for dithering."""
     query = update.callback_query
@@ -221,6 +291,7 @@ async def dithering_colors_selected(update: Update, context: ContextTypes.DEFAUL
 # 2. MAIN PHOTO HANDLER
 # ==========================================================
 
+# ... (photo_handler sin cambios) ...
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     
