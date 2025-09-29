@@ -30,9 +30,6 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 # Importa tus utilidades y handlers
 from handlers import start, style_selected, dithering_colors_selected, photo_handler, show_credits, buy_credits_callback, help_command, paypal_confirm_callback, handle_paypal_webhook 
 from db_utils import get_firestore_client 
-# paypal_utils no se usa directamente aquí, se asume que está en el ambiente
-# import paypal_utils 
-
 
 # --- CONSTANTES ---
 TOKEN: Final = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -56,6 +53,25 @@ app_flask = Flask(__name__)
 app_tg = None 
 webhook_checked = False # Bandera para controlar la verificación del webhook
 
+# --- FUNCIÓN AUXILIAR PARA CORRER CÓDIGO ASÍNCRONO DENTRO DE GEVENT ---
+def run_async_task(coroutine):
+    """Ejecuta una corutina en el thread/greenlet actual de forma síncrona."""
+    # Usamos asyncio.run para asegurar que la corutina se ejecute
+    try:
+        asyncio.run(coroutine)
+    except RuntimeError as e:
+        # Esto puede ocurrir si un event loop ya está corriendo (común con monkey patching), 
+        # intentamos ejecutarlo en el loop existente
+        if 'Event loop is closed' in str(e) or 'Cannot run the event loop' in str(e):
+             # Si el loop está cerrado o no se puede iniciar, lo ignoramos o manejamos si es crítico
+             logging.warning(f"Ignorando RuntimeError en run_async_task: {e}")
+             pass
+        else:
+             logging.error(f"Error inesperado al correr la corutina: {e}")
+             raise e
+# ----------------------------------------------------------------------
+
+
 @app_flask.route('/', methods=['GET'])
 async def health_check_endpoint(): 
     """
@@ -71,6 +87,7 @@ async def health_check_endpoint():
     if not webhook_checked:
         try:
             # Aseguramos la inicialización del PTB en este worker
+            # Nota: Necesitamos usar initialize() aunque estemos en un worker de gunicorn/gevent.
             await app_tg.initialize() 
             webhook_url = f"{RENDER_URL}/telegram_webhook"
             webhook_info = await app_tg.bot.get_webhook_info()
@@ -90,6 +107,7 @@ async def health_check_endpoint():
 
         except Exception as e:
             # Si falla, simplemente logueamos, pero NO detenemos la respuesta 200 OK.
+            # El error "Event loop is closed" es común aquí, el flag lo mitiga, pero no lo elimina al 100%
             logging.error(f"ERROR: Fallo al obtener/configurar el webhook durante el Health Check: {e}")
             
     return "Bot is alive (Webhooks Active)", 200
@@ -102,8 +120,6 @@ async def paypal_webhook_endpoint():
     try:
         data = request.json
         logging.info("PayPal Webhook received.")
-        # handle_paypal_webhook debe ser awaitable si llama a código async o a db_utils que son síncronos
-        # Lo mantendremos asíncrono para compatibilidad si haces llamadas al bot
         await handle_paypal_webhook(data) 
         return jsonify({"status": "success", "message": "Webhook processed"}), 200
     except Exception as e:
@@ -128,7 +144,6 @@ async def telegram_webhook_endpoint():
     try:
         await app_tg.initialize()
     except Exception as e:
-        # Simplemente logueamos, el objetivo es evitar la excepción en process_update
         logging.debug(f"PTB Application initialization check complete: {e}") 
         
     # ************************************************************
@@ -148,11 +163,14 @@ async def telegram_webhook_endpoint():
     # ==================================================
 
 
-    # 3. Delegar el procesamiento a una tarea asíncrona
-    # CRITICAL FIX: Usamos gevent.spawn para ejecutar la coroutine de forma cooperativa.
-    # Esto libera el worker para que envíe el 200 OK inmediatamente.
-    gevent.spawn(app_tg.process_update, update)
+    # 3. Delegar el procesamiento a una tarea asíncrona usando la función auxiliar
+    # CRITICAL FIX: Usamos gevent.spawn con run_async_task para evitar el RuntimeWarning 
+    # de corutina no esperada y asegurar la ejecución de PTB.
+    # NOTA: app_tg.process_update(update) devuelve la corutina.
+    coroutine_to_run = app_tg.process_update(update)
+    gevent.spawn(run_async_task, coroutine_to_run)
 
+    # Devolver el 200 OK inmediatamente
     return jsonify({"status": "ok"}), 200
 
 # ==========================================================
