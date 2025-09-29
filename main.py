@@ -3,6 +3,7 @@ import os
 import json
 import threading
 from typing import Final 
+import asyncio
 
 import firebase_admin
 from firebase_admin import credentials
@@ -63,12 +64,14 @@ def paypal_webhook_endpoint():
 # ==========================================================
 def run_telegram_bot(app_tg):
     """
-    Inicia el bot de Telegram en modo Long Polling. 
-    Usar run_polling() dentro de un hilo mitiga el error 'set_wakeup_fd'.
+    Inicia el bot de Telegram en modo Long Polling dentro de un nuevo loop de eventos.
+    Esto resuelve el error 'set_wakeup_fd'.
     """
     print("*** Starting Telegram Bot Long Polling... ***")
     try:
-        app_tg.run_polling()
+        # **SOLUCIÓN DEFINITIVA:** Ejecuta el método run_polling síncrono 
+        # dentro de un nuevo loop de eventos para el hilo secundario.
+        asyncio.run(app_tg.run_polling())
     except Exception as e:
         logging.critical(f"Telegram Bot Polling failed: {e}")
 
