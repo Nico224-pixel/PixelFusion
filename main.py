@@ -55,10 +55,10 @@ app_tg = None
 
 
 @app_flask.route('/', methods=['GET'])
-async def health_check_endpoint(): # AHORA ES ASÍNCRONO
+async def health_check_endpoint(): 
     """
     Endpoint de Health Check para Render.
-    Chequea y configura el webhook si es necesario en el worker actual.
+    Chequea y configura el webhook si es necesario.
     """
     
     if app_tg is None:
@@ -79,7 +79,6 @@ async def health_check_endpoint(): # AHORA ES ASÍNCRONO
             await app_tg.bot.set_webhook(url=webhook_url)
             logging.info(f"*** Webhook CORREGIDO y configurado en: {webhook_url} ***")
         else:
-            # Este mensaje se verá en cada Health Check exitoso
             logging.info(f"Webhook OK: La URL actual registrada en Telegram es correcta: {webhook_info.url}")
         
 
@@ -116,12 +115,11 @@ async def telegram_webhook_endpoint():
         logging.error("Telegram Application is not initialized.")
         return jsonify({"status": "error", "message": "Bot not ready"}), 500
             
-    # *** FIX: Asegurar que el PTB Application esté inicializado en este worker ***
+    # FIX: Asegurar que el PTB Application esté inicializado en este worker
     try:
         await app_tg.initialize()
     except Exception as e:
-        # Esto debería prevenir el RuntimeError, aunque puede haber un logging 
-        # redundante si ya estaba inicializado.
+        # Simplemente logueamos, el objetivo es evitar la excepción en process_update
         logging.debug(f"PTB Application initialization check complete: {e}") 
         
     # ************************************************************
@@ -142,16 +140,9 @@ async def telegram_webhook_endpoint():
 
 
     # 3. Delegar el procesamiento a una tarea asíncrona
-    try:
-        # Intentar obtener el loop actual para Gunicorn/Gevent
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        # Crear un nuevo loop si no existe (escenario poco probable con Gevent)
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    # Iniciar el procesamiento del update
-    loop.create_task(app_tg.process_update(update))
+    # CRITICAL FIX: Usamos asyncio.create_task() directamente en el contexto asíncrono.
+    # Esto le dice a Gevent (parcheado por monkey.patch_all()) que ejecute esta tarea cooperativamente.
+    asyncio.create_task(app_tg.process_update(update))
 
     return jsonify({"status": "ok"}), 200
 
