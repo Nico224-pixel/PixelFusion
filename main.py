@@ -156,8 +156,3 @@ if __name__ == '__main__':
     app_tg.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, 
                                    lambda update, context: update.message.reply_text("🤔 Please use /start to choose a style or send me a photo to pixelate.")))
-
-    # 7. INICIA EL SERVIDOR WEB DE FLASK (en el hilo principal, escucha el puerto)
-    port = int(os.environ.get("PORT", 8080))
-    print(f"*** Flask Webhook Server running on port {port} at http://0.0.0.0:{port} ***")
-    app_flask.run(host='0.0.0.0', port=port, debug=False)
