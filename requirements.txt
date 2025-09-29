@@ -2,3 +2,5 @@ python-telegram-bot>=20.0
 Pillow>=10.0
 firebase-admin
 Flask[async]
+gunicorn
+gevent
