@@ -77,6 +77,10 @@ async def telegram_webhook_endpoint():
     """
     global bot_initialized_on_webhook
     
+    # === DIAGNÓSTICO 1: Webhook Recibido ===
+    print(">>> DIAGNÓSTICO: Webhook de Telegram recibido por Flask/Gunicorn.")
+    # =======================================
+
     # app_tg ya está inicializado
     if app_tg is None:
         logging.error("Telegram Application is not initialized (Check Gunicorn setup).")
@@ -95,7 +99,7 @@ async def telegram_webhook_endpoint():
             
         except (telegram.error.Conflict, telegram.error.BadRequest) as e:
             if "Flood control exceeded" in str(e):
-                logging.warning(f"Webhook setup failed due to Flood Control (other worker likely succeeded). Proceeding.")
+                logging.warning(f"Webhook setup failed due to Flood Control (other worker likely succeeded). Proceeding.)")
                 bot_initialized_on_webhook = True 
             else:
                 logging.error(f"FATAL: Falló la configuración de webhook de PTB: {e}")
@@ -112,13 +116,20 @@ async def telegram_webhook_endpoint():
     # 2. Crea el objeto Update de Telegram
     update = Update.de_json(update_json, app_tg.bot)
 
+    # === DIAGNÓSTICO 2: Update Creado y Programado ===
+    if update.effective_message and update.effective_message.text:
+        print(f">>> DIAGNÓSTICO: Update para procesar: '{update.effective_message.text}' (Tipo: Mensaje)")
+    elif update.callback_query:
+        print(f">>> DIAGNÓSTICO: Update para procesar: '{update.callback_query.data}' (Tipo: Callback)")
+    else:
+        print(f">>> DIAGNÓSTICO: Update creado con éxito (Tipo: {update.effective_message.content_type if update.effective_message else 'Desconocido'})")
+    # ==================================================
+
+
     # 3. CRITICAL FIX: Delegar el procesamiento a una tarea asíncrona
-    # Esto libera inmediatamente al worker de Gunicorn para que no haya timeout
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
-        # Esto ocurre si get_event_loop se llama desde un hilo sin loop asociado (Gunicorn/Gevent).
-        # Esto no debería pasar con patch_all, pero es un fail-safe.
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     
