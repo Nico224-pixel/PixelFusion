@@ -75,7 +75,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     saldo_msg = f"✨ Hello {update.effective_user.first_name}! I am the Pixel Art Bot.\n\n"
     saldo_msg += f"**💰 Balance:** **{user_data.get('total_credits', 0)}** credits (Free: {user_data.get('free_credits', 0)})"
     saldo_msg += "\n\n**1.** Select a style below. **2.** Send your photo 📸\n"
-    saldo_msg += "You can check your detailed balance and buy credits with the /saldo command."
+    saldo_msg += "You can check your detailed balance and buy credits with the /balance command."
     
     if query:
         await safe_edit(query, saldo_msg, markup=get_style_keyboard(), parse_mode="Markdown")
@@ -84,7 +84,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Shows the detailed user balance (/saldo command or CALLBACK button)."""
+    """Shows the detailed user balance (/balance command or CALLBACK button)."""
     
     if update.callback_query:
         query = update.callback_query
@@ -187,6 +187,20 @@ async def style_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "🎨 **Dithering** selected. How many colors do you want to use?", 
                         markup=reply_markup)
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shows the list of available commands and their brief description."""
+    
+    help_text = (
+        "🤖 **Available Commands**\n\n"
+        "Here are the commands you can use with the bot:\n\n"
+        "**/start** — Start the bot, select a new pixel style, and check your current balance.\n"
+        "**/balance** — View your detailed credit balance (Free and Purchased) and purchase more credits.\n"
+        "**/buycredits** — Shortcut to the **/balance** menu for purchasing credits.\n"
+        "**/help** — Show this list of commands and brief descriptions.\n\n"
+        "💡 **To use the bot:** Select a style using **/start**, then send a photo!"
+    )
+    
+    await update.message.reply_text(help_text, parse_mode="Markdown")
 
 async def dithering_colors_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the selection of colors for dithering."""

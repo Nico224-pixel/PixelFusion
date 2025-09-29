@@ -14,8 +14,9 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes 
 
 # Importa tus utilidades y handlers
-from handlers import start, style_selected, dithering_colors_selected, photo_handler, show_credits, buy_credits_callback 
+from handlers import start, style_selected, dithering_colors_selected, photo_handler, show_credits, buy_credits_callback, help_command 
 from db_utils import get_firestore_client 
+
 
 # --- CONSTANTES ---
 TOKEN: Final = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -72,7 +73,6 @@ async def buy_credits_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Maneja el comando /buycredits, redirige al menú de saldo."""
     await show_credits(update, context)
 
-
 # ==========================================================
 # MAIN ARRANQUE DEL BOT
 # ==========================================================
@@ -91,7 +91,8 @@ if __name__ == '__main__':
     # 3. Handlers de comandos
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("buycredits", buy_credits_command))
-    app.add_handler(CommandHandler("saldo", show_credits)) 
+    app.add_handler(CommandHandler("balance", show_credits)) 
+    app.add_handler(CommandHandler("help", help_command)) 
     
     # 4. Callbacks para acciones de usuario
     app.add_handler(CallbackQueryHandler(show_credits, pattern="^show_credits$"))        
@@ -104,7 +105,6 @@ if __name__ == '__main__':
     
     # 6. Handlers de Mensajes
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
-    # CAMBIO A INGLÉS
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, 
                                    lambda update, context: update.message.reply_text("🤔 Please use /start to choose a style or send me a photo to pixelate.")))
 
