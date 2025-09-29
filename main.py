@@ -3,7 +3,10 @@ import os
 import json
 from typing import Final 
 import asyncio 
-import sys # Agregado para usar sys.exit en caso de error fatal
+import sys 
+
+# Configurar logging al inicio
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- CRITICAL FIX: Monkey Patching para Gevent/Gunicorn ---
 from gevent import monkey
@@ -38,6 +41,9 @@ PAYPAL_CLIENT_ID: Final = os.environ.get("PAYPAL_CLIENT_ID", "SIMULATED_ID")
 PAYPAL_CLIENT_SECRET: Final = os.environ.get("PAYPAL_CLIENT_SECRET", "SIMULATED_SECRET")
 # RENDER_URL debe ser tu URL base: https://pixelfusion-4m8v.onrender.com
 RENDER_URL: Final = os.environ.get("RENDER_EXTERNAL_URL") 
+if not RENDER_URL:
+    logging.critical("RENDER_EXTERNAL_URL no está definida. La configuración del webhook fallará.")
+
 
 # ==========================================================
 # INICIALIZACIÓN DE FLASK (Servidor Webhook)
@@ -46,7 +52,7 @@ RENDER_URL: Final = os.environ.get("RENDER_EXTERNAL_URL")
 app_flask = Flask(__name__)
 # Variables globales para la app de Telegram y el estado de inicialización
 app_tg = None 
-bot_initialized_on_webhook = False 
+# Eliminamos bot_initialized_on_webhook para forzar la reconfiguración en cada worker
 
 @app_flask.route('/', methods=['GET'])
 def health_check_endpoint():
@@ -57,12 +63,10 @@ def health_check_endpoint():
 async def paypal_webhook_endpoint(): # <--- DEBE SER ASÍNCRONO
     """
     Endpoint dedicado a recibir notificaciones (Webhooks) de PayPal.
-    NOTA: En producción, aquí se debe verificar la firma del webhook.
     """
     try:
         data = request.json
         logging.info("PayPal Webhook received.")
-        # Llamar a la función asíncrona para procesar el webhook
         await handle_paypal_webhook(data) 
         return jsonify({"status": "success", "message": "Webhook processed"}), 200
     except Exception as e:
@@ -73,41 +77,37 @@ async def paypal_webhook_endpoint(): # <--- DEBE SER ASÍNCRONO
 async def telegram_webhook_endpoint():
     """
     Endpoint para recibir las actualizaciones de Telegram.
-    Realiza la configuración del webhook si es la primera vez.
+    FUERZA la configuración del webhook en cada solicitud para diagnosticar.
     """
-    global bot_initialized_on_webhook
     
     # === DIAGNÓSTICO 1: Webhook Recibido ===
-    print(">>> DIAGNÓSTICO: Webhook de Telegram recibido por Flask/Gunicorn.")
+    logging.info(">>> DIAGNÓSTICO: Webhook de Telegram recibido por Flask/Gunicorn.")
     # =======================================
 
-    # app_tg ya está inicializado
     if app_tg is None:
-        logging.error("Telegram Application is not initialized (Check Gunicorn setup).")
+        logging.error("Telegram Application is not initialized.")
         return jsonify({"status": "error", "message": "Bot not ready"}), 500
 
-    # *** PASO CRÍTICO: Configuración de Webhook Condicional y Anti-Flood ***
-    if not bot_initialized_on_webhook:
-        webhook_url = f"{RENDER_URL}/telegram_webhook"
-        try:
-            # 1. Inicializar y configurar el webhook
-            await app_tg.initialize() 
-            await app_tg.bot.delete_webhook() 
-            await app_tg.bot.set_webhook(url=webhook_url)
-            print(f"*** Webhook de Telegram configurado en: {webhook_url} ***")
-            bot_initialized_on_webhook = True
+    # *** PASO CRÍTICO: Reconfiguración FORZADA del Webhook ***
+    # Esto garantiza que Telegram tenga la URL correcta.
+    webhook_url = f"{RENDER_URL}/telegram_webhook"
+    try:
+        await app_tg.initialize() 
+        # Intentamos borrar y configurar de nuevo forzadamente
+        await app_tg.bot.delete_webhook() 
+        await app_tg.bot.set_webhook(url=webhook_url)
+        logging.info(f"*** Webhook de Telegram RE-CONFIGURADO en: {webhook_url} ***")
+        
+    except (telegram.error.Conflict, telegram.error.BadRequest) as e:
+        # Maneja el error de 'Flood control' si un worker lo hace demasiado rápido.
+        if "Flood control exceeded" in str(e):
+            logging.warning("Webhook setup failed due to Flood Control (other worker likely succeeded). Proceeding.")
+        else:
+            # Si hay un error de BadRequest (ej. URL no válida), lo loguea.
+            logging.error(f"ERROR: Falló la configuración de webhook: {e}. ¿Es la URL correcta?")
             
-        except (telegram.error.Conflict, telegram.error.BadRequest) as e:
-            if "Flood control exceeded" in str(e):
-                logging.warning(f"Webhook setup failed due to Flood Control (other worker likely succeeded). Proceeding.)")
-                bot_initialized_on_webhook = True 
-            else:
-                logging.error(f"FATAL: Falló la configuración de webhook de PTB: {e}")
-                return jsonify({"status": "error", "message": "PTB Webhook Setup Failed"}), 500
-
-        except Exception as e:
-            logging.error(f"FATAL: Falló la configuración de webhook de PTB: {e}")
-            return jsonify({"status": "error", "message": "PTB Webhook Setup Failed"}), 500
+    except Exception as e:
+        logging.error(f"ERROR: Error desconocido durante la configuración del webhook: {e}")
             
     # ************************************************************
     
@@ -118,22 +118,21 @@ async def telegram_webhook_endpoint():
 
     # === DIAGNÓSTICO 2: Update Creado y Programado ===
     if update.effective_message and update.effective_message.text:
-        print(f">>> DIAGNÓSTICO: Update para procesar: '{update.effective_message.text}' (Tipo: Mensaje)")
+        logging.info(f">>> DIAGNÓSTICO: Update para procesar: '{update.effective_message.text}' (Tipo: Mensaje)")
     elif update.callback_query:
-        print(f">>> DIAGNÓSTICO: Update para procesar: '{update.callback_query.data}' (Tipo: Callback)")
+        logging.info(f">>> DIAGNÓSTICO: Update para procesar: '{update.callback_query.data}' (Tipo: Callback)")
     else:
-        print(f">>> DIAGNÓSTICO: Update creado con éxito (Tipo: {update.effective_message.content_type if update.effective_message else 'Desconocido'})")
+        logging.info(f">>> DIAGNÓSTICO: Update creado con éxito (Tipo: {update.effective_message.content_type if update.effective_message else 'Desconocido'})")
     # ==================================================
 
 
-    # 3. CRITICAL FIX: Delegar el procesamiento a una tarea asíncrona
+    # 3. Delegar el procesamiento a una tarea asíncrona
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     
-    # Crea una tarea para procesar la actualización y retorna inmediatamente el 200 OK.
     loop.create_task(app_tg.process_update(update))
 
     return jsonify({"status": "ok"}), 200
@@ -147,16 +146,14 @@ try:
     cred = credentials.Certificate(service_account_info)
     firebase_admin.initialize_app(cred)
     db_initialized = True
-    print("Firebase inicializado y listo.")
+    logging.info("Firebase inicializado y listo.")
 except KeyError:
-    print("ERROR FATAL: 'FIREBASE_KEY' no existe o está vacía.")
-    sys.exit(1) # Finaliza si no hay clave de Firebase (crucial para la lógica)
+    logging.critical("ERROR FATAL: 'FIREBASE_KEY' no existe o está vacía. El bot no puede funcionar.")
+    sys.exit(1) 
 except Exception as e:
-    print(f"ERROR FATAL al inicializar Firebase. Detalle: {e}")
+    logging.critical(f"ERROR FATAL al inicializar Firebase. Detalle: {e}")
     sys.exit(1)
-finally:
-    if not db_initialized:
-        print("El bot funcionará sin lógica de créditos.")
+
 
 # --- HANDLER DE COMANDO /buycredits ---
 async def buy_credits_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -194,7 +191,6 @@ def initialize_telegram_bot():
     app_tg.add_handler(CallbackQueryHandler(show_credits, pattern="^show_credits$"))        
     app_tg.add_handler(CallbackQueryHandler(buy_credits_callback, pattern="^buy_credits_[0-9.]+$")) 
     app_tg.add_handler(CallbackQueryHandler(start, pattern="^start$"))                      
-    # El callback de confirmación se mantiene por si acaso
     app_tg.add_handler(CallbackQueryHandler(paypal_confirm_callback, pattern="^paypal_confirm_[0-9.]+_[0-9]+$")) 
 
     # 5. Callbacks para Estilos
@@ -206,10 +202,9 @@ def initialize_telegram_bot():
     app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, 
                                    lambda update, context: update.message.reply_text("🤔 Please use /start to choose a style or send me a photo to pixelate.")))
     
-    print("PTB Application Builder and Handlers configured and ready for Webhook.")
+    logging.info("PTB Application Builder and Handlers configured and ready for Webhook.")
 
-# Ejecutar la función inmediatamente. Esto garantiza que app_tg esté disponible 
-# tan pronto como el módulo main.py sea importado por Gunicorn.
+# Ejecutar la función inmediatamente.
 initialize_telegram_bot()
 
 
@@ -217,5 +212,5 @@ initialize_telegram_bot()
 # MAIN ARRANQUE DEL SERVIDOR (Solo para referencia de ejecución)
 # ==========================================================
 if __name__ == '__main__':
-    print("Bot reiniciado. Modo: Webhook (Ambiente Local/Test).")
+    logging.info("Bot reiniciado. Modo: Webhook (Ambiente Local/Test).")
     pass
