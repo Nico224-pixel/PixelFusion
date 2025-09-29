@@ -16,8 +16,10 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes 
 
 # Importa tus utilidades y handlers
+# Asegúrate de que handle_paypal_webhook esté importado aquí
 from handlers import start, style_selected, dithering_colors_selected, photo_handler, show_credits, buy_credits_callback, help_command, paypal_confirm_callback, handle_paypal_webhook 
 from db_utils import get_firestore_client 
+import paypal_utils 
 
 
 # --- CONSTANTES ---
@@ -35,7 +37,7 @@ RENDER_URL: Final = os.environ.get("RENDER_EXTERNAL_URL")
 # ==========================================================
 
 app_flask = Flask(__name__)
-# Variable global para la app de Telegram (para pasarla a la ruta de Flask)
+# Variables globales para la app de Telegram y el estado de inicialización
 app_tg = None 
 bot_initialized_on_webhook = False 
 
@@ -45,14 +47,16 @@ def health_check_endpoint():
     return "Bot is alive (Webhooks Active)", 200
 
 @app_flask.route('/paypal_webhook', methods=['POST'])
-def paypal_webhook_endpoint():
+async def paypal_webhook_endpoint(): # <--- DEBE SER ASÍNCRONO
     """
     Endpoint dedicado a recibir notificaciones (Webhooks) de PayPal.
+    NOTA: En producción, aquí se debe verificar la firma del webhook.
     """
     try:
         data = request.json
         logging.info("PayPal Webhook received.")
-        handle_paypal_webhook(data) 
+        # Llamar a la función asíncrona para procesar el webhook
+        await handle_paypal_webhook(data) 
         return jsonify({"status": "success", "message": "Webhook processed"}), 200
     except Exception as e:
         logging.error(f"Error processing PayPal webhook: {e}")
@@ -62,29 +66,32 @@ def paypal_webhook_endpoint():
 async def telegram_webhook_endpoint():
     """
     Endpoint para recibir las actualizaciones de Telegram.
-    Realiza la inicialización de la app_tg si es la primera vez.
+    Realiza la configuración del webhook si es la primera vez.
     """
     global bot_initialized_on_webhook
     
+    # app_tg ya está inicializado (gracias a initialize_telegram_bot()), solo verificamos el token
     if app_tg is None:
-        logging.error("Telegram Application is not initialized.")
+        logging.error("Telegram Application is not initialized (Check Gunicorn setup).")
         return jsonify({"status": "error", "message": "Bot not ready"}), 500
 
-    # *** PASO CRÍTICO: Inicialización Condicional de Telegram ***
+    # *** PASO CRÍTICO: Configuración de Webhook Condicional ***
     if not bot_initialized_on_webhook:
         # Esto se ejecuta solo la primera vez que Telegram envía un mensaje.
         webhook_url = f"{RENDER_URL}/telegram_webhook"
         try:
-            await app_tg.initialize() 
+            # NOTE: app_tg is already initialized, we just need to set the webhook URL.
+            await app_tg.initialize() # Llama a initialize() para preparar el bot
             await app_tg.bot.delete_webhook() 
             await app_tg.bot.set_webhook(url=webhook_url)
-            print(f"*** Webhook de Telegram inicializado y configurado en: {webhook_url} ***")
+            print(f"*** Webhook de Telegram configurado en: {webhook_url} ***")
             bot_initialized_on_webhook = True
         except Exception as e:
-            logging.error(f"FATAL: Fallo la inicialización de PTB: {e}")
-            return jsonify({"status": "error", "message": "PTB Init Failed"}), 500
+            logging.error(f"FATAL: Falló la configuración de webhook de PTB: {e}")
+            return jsonify({"status": "error", "message": "PTB Webhook Setup Failed"}), 500
     # ************************************************************
-        # 1. Recibe el JSON de Telegram
+    
+    # 1. Recibe el JSON de Telegram
     update_json = request.json
     # 2. Crea el objeto Update de Telegram
     update = Update.de_json(update_json, app_tg.bot)
@@ -93,9 +100,6 @@ async def telegram_webhook_endpoint():
     await app_tg.process_update(update)
 
     return jsonify({"status": "ok"}), 200
-
-# ... (El código de Firebase se mantiene igual) ...
-# ... (Los Handlers se mantienen igual) ...
 
 # ==========================================================
 # INICIALIZACIÓN DE FIREBASE
@@ -121,38 +125,60 @@ async def buy_credits_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await show_credits(update, context)
 
 # ==========================================================
-# MAIN ARRANQUE DEL BOT Y SERVIDOR
+# TELEGRAM BOT INITIALIZATION FUNCTION (RUNS ON IMPORT)
 # ==========================================================
-if __name__ == '__main__':
-    print("Bot reiniciado. Modo: Webhook.")
-    
+
+def initialize_telegram_bot():
+    """
+    Configura y construye la aplicación PTB, asegurando que se ejecute 
+    al cargar el módulo (cuando Gunicorn arranca).
+    """
+    global app_tg
     # 1. CONFIGURACIÓN E INICIO DEL BOT DE TELEGRAM
     app_tg = ApplicationBuilder().token(TOKEN).build() 
     
-    # ... (Bot Data Configuration se mantiene igual) ...
+    # 2. Configuración de datos del bot (context.bot_data)
     app_tg.bot_data['MAX_FREE_CREDITS'] = MAX_FREE_CREDITS
     app_tg.bot_data['WATERMARK_TEXT'] = WATERMARK_TEXT
     app_tg.bot_data['MAX_IMAGE_SIZE_BYTES'] = MAX_IMAGE_SIZE_BYTES
     app_tg.bot_data['PAYPAL_CLIENT_ID'] = PAYPAL_CLIENT_ID
     app_tg.bot_data['PAYPAL_CLIENT_SECRET'] = PAYPAL_CLIENT_SECRET
+    app_tg.bot_data['RENDER_EXTERNAL_URL'] = RENDER_URL 
 
-    # 2. Handlers de comandos
+    # 3. Handlers de comandos
     app_tg.add_handler(CommandHandler("start", start))
     app_tg.add_handler(CommandHandler("buycredits", buy_credits_command))
     app_tg.add_handler(CommandHandler("balance", show_credits)) 
     app_tg.add_handler(CommandHandler("help", help_command)) 
     
-    # 3. Callbacks para acciones de usuario
+    # 4. Callbacks para acciones de usuario
     app_tg.add_handler(CallbackQueryHandler(show_credits, pattern="^show_credits$"))        
     app_tg.add_handler(CallbackQueryHandler(buy_credits_callback, pattern="^buy_credits_[0-9.]+$")) 
     app_tg.add_handler(CallbackQueryHandler(start, pattern="^start$"))                      
-    app_tg.add_handler(CallbackQueryHandler(paypal_confirm_callback, pattern="^paypal_confirm_[0-9.]+_[0-9]+$"))
+    # El callback de confirmación se mantiene por si acaso
+    app_tg.add_handler(CallbackQueryHandler(paypal_confirm_callback, pattern="^paypal_confirm_[0-9.]+_[0-9]+$")) 
 
-    # 4. Callbacks para Estilos
+    # 5. Callbacks para Estilos
     app_tg.add_handler(CallbackQueryHandler(dithering_colors_selected, pattern="^(8|16|32)$"))
     app_tg.add_handler(CallbackQueryHandler(style_selected, pattern="^((?![0-9.]+$).)+$"))
     
-    # 5. Handlers de Mensajes
+    # 6. Handlers de Mensajes
     app_tg.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, 
                                    lambda update, context: update.message.reply_text("🤔 Please use /start to choose a style or send me a photo to pixelate.")))
+    
+    print("PTB Application Builder and Handlers configured and ready for Webhook.")
+
+# Ejecutar la función inmediatamente. Esto garantiza que app_tg esté disponible 
+# tan pronto como el módulo main.py sea importado por Gunicorn.
+initialize_telegram_bot()
+
+
+# ==========================================================
+# MAIN ARRANQUE DEL SERVIDOR (Solo para referencia de ejecución)
+# ==========================================================
+if __name__ == '__main__':
+    print("Bot reiniciado. Modo: Webhook (Ambiente Local/Test).")
+    # El comando de arranque de Gunicorn en Render ignora este bloque, 
+    # pero el resto del código ya ha definido las funciones de Flask y PTB.
+    pass
