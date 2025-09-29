@@ -12,6 +12,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 from gevent import monkey
 import gevent # <-- Importar gevent para usar gevent.spawn
 # Asegúrate de que esto se ejecute lo antes posible.
+# Es fundamental que esto esté aquí y NO se parchee el subsistema async/await
 monkey.patch_all(subprocess=False) 
 # --------------------------------------------------------
 
@@ -53,24 +54,8 @@ app_flask = Flask(__name__)
 app_tg = None 
 webhook_checked = False # Bandera para controlar la verificación del webhook
 
-# --- FUNCIÓN AUXILIAR PARA CORRER CÓDIGO ASÍNCRONO DENTRO DE GEVENT ---
-def run_async_task(coroutine):
-    """Ejecuta una corutina en el thread/greenlet actual de forma síncrona."""
-    # Usamos asyncio.run para asegurar que la corutina se ejecute
-    try:
-        asyncio.run(coroutine)
-    except RuntimeError as e:
-        # Esto puede ocurrir si un event loop ya está corriendo (común con monkey patching), 
-        # intentamos ejecutarlo en el loop existente
-        if 'Event loop is closed' in str(e) or 'Cannot run the event loop' in str(e):
-             # Si el loop está cerrado o no se puede iniciar, lo ignoramos o manejamos si es crítico
-             logging.warning(f"Ignorando RuntimeError en run_async_task: {e}")
-             pass
-        else:
-             logging.error(f"Error inesperado al correr la corutina: {e}")
-             raise e
-# ----------------------------------------------------------------------
-
+# --- FUNCIÓN AUXILIAR ELIMINADA: run_async_task ELIMINADA ---
+# La función run_async_task ha sido eliminada para evitar el error asyncio.run() cannot be called from a running event loop
 
 @app_flask.route('/', methods=['GET'])
 async def health_check_endpoint(): 
@@ -163,12 +148,11 @@ async def telegram_webhook_endpoint():
     # ==================================================
 
 
-    # 3. Delegar el procesamiento a una tarea asíncrona usando la función auxiliar
-    # CRITICAL FIX: Usamos gevent.spawn con run_async_task para evitar el RuntimeWarning 
-    # de corutina no esperada y asegurar la ejecución de PTB.
-    # NOTA: app_tg.process_update(update) devuelve la corutina.
+    # 3. Delegar el procesamiento a una tarea asíncrona
+    # CRITICAL FIX: Usamos gevent.spawn para que el greenlet ejecute la corutina
+    # de PTB. Esto evita el timeout de Gunicorn y el RuntimeError de asyncio.run().
     coroutine_to_run = app_tg.process_update(update)
-    gevent.spawn(run_async_task, coroutine_to_run)
+    gevent.spawn(coroutine_to_run) # <-- ¡Este es el cambio clave!
 
     # Devolver el 200 OK inmediatamente
     return jsonify({"status": "ok"}), 200
