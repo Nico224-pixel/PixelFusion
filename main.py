@@ -52,49 +52,44 @@ if not RENDER_URL:
 app_flask = Flask(__name__)
 # Variables globales para la app de Telegram y el estado de inicialización
 app_tg = None 
-# Nueva bandera para la comprobación de estado de webhook
-webhook_status_checked = False 
 
 
 @app_flask.route('/', methods=['GET'])
-async def health_check_endpoint(): # <--- AHORA ES ASÍNCRONO
+async def health_check_endpoint(): # AHORA ES ASÍNCRONO
     """
     Endpoint de Health Check para Render.
-    También se usa para chequear y configurar el webhook si es necesario.
+    Chequea y configura el webhook si es necesario en el worker actual.
     """
-    global webhook_status_checked
     
     if app_tg is None:
         return "Bot not ready (TG app is None)", 500
 
-    # Esta lógica solo se ejecuta la primera vez que un worker recibe el Health Check
-    if not webhook_status_checked:
-        try:
-            await app_tg.initialize()
-            webhook_info = await app_tg.bot.get_webhook_info()
-            webhook_url = f"{RENDER_URL}/telegram_webhook"
+    try:
+        # Aseguramos la inicialización del PTB en este worker
+        await app_tg.initialize() 
+        webhook_info = await app_tg.bot.get_webhook_info()
+        webhook_url = f"{RENDER_URL}/telegram_webhook"
+        
+        # 1. Comprobar si la URL actual es la correcta
+        if webhook_info.url != webhook_url:
+            logging.warning(f"Webhook INCORRECTO: Telegram tiene '{webhook_info.url}'. Intentando corregir a '{webhook_url}'.")
             
-            # 1. Comprobar si la URL actual es la correcta
-            if webhook_info.url != webhook_url:
-                logging.warning(f"Webhook INCORRECTO: Telegram tiene '{webhook_info.url}'. Intentando corregir a '{webhook_url}'.")
-                
-                # Intentar corregir/configurar el webhook
-                await app_tg.bot.delete_webhook()
-                await app_tg.bot.set_webhook(url=webhook_url)
-                logging.info(f"*** Webhook CORREGIDO y configurado en: {webhook_url} ***")
-            else:
-                logging.info(f"Webhook OK: La URL actual registrada en Telegram es correcta: {webhook_info.url}")
-            
-            # Registrar que la comprobación inicial se realizó con éxito
-            webhook_status_checked = True 
+            # Intentar corregir/configurar el webhook
+            await app_tg.bot.delete_webhook()
+            await app_tg.bot.set_webhook(url=webhook_url)
+            logging.info(f"*** Webhook CORREGIDO y configurado en: {webhook_url} ***")
+        else:
+            # Este mensaje se verá en cada Health Check exitoso
+            logging.info(f"Webhook OK: La URL actual registrada en Telegram es correcta: {webhook_info.url}")
+        
 
-        except Exception as e:
-            logging.error(f"ERROR: Fallo al obtener/configurar el webhook durante el Health Check: {e}")
+    except Exception as e:
+        logging.error(f"ERROR: Fallo al obtener/configurar el webhook durante el Health Check: {e}")
             
     return "Bot is alive (Webhooks Active)", 200
 
 @app_flask.route('/paypal_webhook', methods=['POST'])
-async def paypal_webhook_endpoint(): # <--- DEBE SER ASÍNCRONO
+async def paypal_webhook_endpoint():
     """
     Endpoint dedicado a recibir notificaciones (Webhooks) de PayPal.
     """
@@ -121,6 +116,14 @@ async def telegram_webhook_endpoint():
         logging.error("Telegram Application is not initialized.")
         return jsonify({"status": "error", "message": "Bot not ready"}), 500
             
+    # *** FIX: Asegurar que el PTB Application esté inicializado en este worker ***
+    try:
+        await app_tg.initialize()
+    except Exception as e:
+        # Esto debería prevenir el RuntimeError, aunque puede haber un logging 
+        # redundante si ya estaba inicializado.
+        logging.debug(f"PTB Application initialization check complete: {e}") 
+        
     # ************************************************************
     
     # 1. Recibe el JSON de Telegram
@@ -140,11 +143,14 @@ async def telegram_webhook_endpoint():
 
     # 3. Delegar el procesamiento a una tarea asíncrona
     try:
+        # Intentar obtener el loop actual para Gunicorn/Gevent
         loop = asyncio.get_event_loop()
     except RuntimeError:
+        # Crear un nuevo loop si no existe (escenario poco probable con Gevent)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     
+    # Iniciar el procesamiento del update
     loop.create_task(app_tg.process_update(update))
 
     return jsonify({"status": "ok"}), 200
