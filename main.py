@@ -58,18 +58,17 @@ webhook_checked = False # Bandera para controlar la verificación del webhook
 def run_tg_update(update: Update):
     """
     Función síncrona simple que es ejecutada por gevent.spawn.
-    Llama a la corutina de PTB y la ejecuta en el bucle de Gevent/Async.
+    Programa la corutina de PTB como una tarea en el bucle de eventos existente (parcheado por Gevent).
     """
     try:
-        # El método run_until_complete del loop ya existente 
-        # (gracias al monkey patching) es la forma correcta.
-        asyncio.get_event_loop().run_until_complete(app_tg.process_update(update))
-    except RuntimeError as e:
-        # Esto ocurre si el loop no se puede obtener o está cerrado, 
-        # pero es un intento más limpio que asyncio.run
-        logging.warning(f"Error al ejecutar update en greenlet: {e}")
+        coroutine = app_tg.process_update(update)
+        # CRITICAL FIX: Programar la corutina como una tarea en el loop ya existente. 
+        # Esto es no bloqueante y evita el error "This event loop is already running".
+        asyncio.get_event_loop().create_task(coroutine)
+        logging.info("Update de Telegram programado como tarea asíncrona.")
     except Exception as e:
-        logging.error(f"Fallo crítico en el procesamiento del update: {e}")
+        # Fallo si el loop no está disponible o la tarea no se puede crear
+        logging.error(f"Fallo crítico al programar la tarea del update: {e}")
 
 # ----------------------------------------------------------------------
 
@@ -142,7 +141,7 @@ async def telegram_webhook_endpoint():
             
     # FIX: Asegurar que el PTB Application esté inicializado en este worker
     try:
-        # Aquí solo es necesario para el Health Check, pero se mantiene como precaución
+        # Se requiere initialize() para cada worker, incluso si ya lo hizo el Health Check.
         await app_tg.initialize() 
     except Exception as e:
         logging.debug(f"PTB Application initialization check complete: {e}") 
@@ -164,9 +163,8 @@ async def telegram_webhook_endpoint():
     # ==================================================
 
 
-    # 3. Delegar el procesamiento a una tarea asíncrona
-    # CRITICAL FIX: Pasamos la función *callable* run_tg_update junto con el argumento 'update'
-    # Esto cumple con la firma de gevent.spawn(callable, *args) y evita el TypeError.
+    # 3. Delegar el procesamiento a una tarea asíncrona no bloqueante
+    # El worker devuelve el 200 OK inmediatamente.
     gevent.spawn(run_tg_update, update)
 
     # Devolver el 200 OK inmediatamente
