@@ -29,7 +29,7 @@ PAYPAL_CLIENT_ID: Final = os.environ.get("PAYPAL_CLIENT_ID", "SIMULATED_ID")
 PAYPAL_CLIENT_SECRET: Final = os.environ.get("PAYPAL_CLIENT_SECRET", "SIMULATED_SECRET")
 
 # ==========================================================
-# INICIALIZACIÓN DE FLASK (reemplaza al servidor dummy)
+# INICIALIZACIÓN DE FLASK (Servidor Webhook)
 # ==========================================================
 
 app_flask = Flask(__name__)
@@ -48,8 +48,7 @@ def paypal_webhook_endpoint():
         data = request.json
         logging.info("PayPal Webhook received.")
         
-        # Llama al handler real de PayPal (ahora definido en handlers.py)
-        # Nota: La verificación de autenticidad de PayPal debe hacerse aquí antes de llamar al handler.
+        # Llama al handler real de PayPal para acreditar los créditos
         handle_paypal_webhook(data) 
         
         # Siempre debe retornar 200 para evitar que PayPal reintente.
@@ -63,7 +62,10 @@ def paypal_webhook_endpoint():
 # FUNCIÓN DE ARRANQUE DEL BOT (en hilo)
 # ==========================================================
 def run_telegram_bot(app_tg):
-    """Inicia el bot de Telegram en modo Long Polling."""
+    """
+    Inicia el bot de Telegram en modo Long Polling. 
+    Usar run_polling() dentro de un hilo mitiga el error 'set_wakeup_fd'.
+    """
     print("*** Starting Telegram Bot Long Polling... ***")
     try:
         app_tg.run_polling()
@@ -100,30 +102,30 @@ if __name__ == '__main__':
     print("Bot reiniciado.")
     
     # 1. CONFIGURACIÓN E INICIO DEL BOT DE TELEGRAM
-    app_tg = ApplicationBuilder().token(TOKEN).build() # Usamos app_tg
+    app_tg = ApplicationBuilder().token(TOKEN).build() 
     app_tg.bot_data['MAX_FREE_CREDITS'] = MAX_FREE_CREDITS
     app_tg.bot_data['WATERMARK_TEXT'] = WATERMARK_TEXT
     app_tg.bot_data['MAX_IMAGE_SIZE_BYTES'] = MAX_IMAGE_SIZE_BYTES
     app_tg.bot_data['PAYPAL_CLIENT_ID'] = PAYPAL_CLIENT_ID
     app_tg.bot_data['PAYPAL_CLIENT_SECRET'] = PAYPAL_CLIENT_SECRET
 
-    # 2. Handlers de comandos (usando app_tg)
+    # 2. Handlers de comandos
     app_tg.add_handler(CommandHandler("start", start))
     app_tg.add_handler(CommandHandler("buycredits", buy_credits_command))
     app_tg.add_handler(CommandHandler("balance", show_credits)) 
     app_tg.add_handler(CommandHandler("help", help_command)) 
     
-    # 3. Callbacks para acciones de usuario (usando app_tg)
+    # 3. Callbacks para acciones de usuario
     app_tg.add_handler(CallbackQueryHandler(show_credits, pattern="^show_credits$"))        
     app_tg.add_handler(CallbackQueryHandler(buy_credits_callback, pattern="^buy_credits_[0-9.]+$")) 
     app_tg.add_handler(CallbackQueryHandler(start, pattern="^start$"))                      
     app_tg.add_handler(CallbackQueryHandler(paypal_confirm_callback, pattern="^paypal_confirm_[0-9.]+_[0-9]+$"))
 
-    # 4. Callbacks para Estilos (usando app_tg)
+    # 4. Callbacks para Estilos
     app_tg.add_handler(CallbackQueryHandler(dithering_colors_selected, pattern="^(8|16|32)$"))
     app_tg.add_handler(CallbackQueryHandler(style_selected, pattern="^((?![0-9.]+$).)+$"))
     
-    # 5. Handlers de Mensajes (usando app_tg)
+    # 5. Handlers de Mensajes
     app_tg.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, 
                                    lambda update, context: update.message.reply_text("🤔 Please use /start to choose a style or send me a photo to pixelate.")))
