@@ -2,7 +2,12 @@ import logging
 import os
 import json
 from typing import Final 
-import asyncio
+import asyncio 
+
+# --- CRITICAL FIX: Monkey Patching para Gevent/Gunicorn ---
+from gevent import monkey
+monkey.patch_all(subprocess=False) # Parchear todo excepto subprocessos (para evitar conflictos)
+# --------------------------------------------------------
 
 import firebase_admin
 from firebase_admin import credentials
@@ -12,11 +17,11 @@ from firebase_admin import firestore
 from flask import Flask, request, jsonify 
 
 # --- Imports de Telegram ---
+import telegram # Import telegram for error handling
 from telegram import Update 
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes 
 
 # Importa tus utilidades y handlers
-# Asegúrate de que handle_paypal_webhook esté importado aquí
 from handlers import start, style_selected, dithering_colors_selected, photo_handler, show_credits, buy_credits_callback, help_command, paypal_confirm_callback, handle_paypal_webhook 
 from db_utils import get_firestore_client 
 import paypal_utils 
@@ -70,25 +75,37 @@ async def telegram_webhook_endpoint():
     """
     global bot_initialized_on_webhook
     
-    # app_tg ya está inicializado (gracias a initialize_telegram_bot()), solo verificamos el token
+    # app_tg ya está inicializado
     if app_tg is None:
         logging.error("Telegram Application is not initialized (Check Gunicorn setup).")
         return jsonify({"status": "error", "message": "Bot not ready"}), 500
 
-    # *** PASO CRÍTICO: Configuración de Webhook Condicional ***
+    # *** PASO CRÍTICO: Configuración de Webhook Condicional y Anti-Flood ***
     if not bot_initialized_on_webhook:
-        # Esto se ejecuta solo la primera vez que Telegram envía un mensaje.
         webhook_url = f"{RENDER_URL}/telegram_webhook"
         try:
-            # NOTE: app_tg is already initialized, we just need to set the webhook URL.
-            await app_tg.initialize() # Llama a initialize() para preparar el bot
+            # 1. Inicializar y configurar el webhook
+            await app_tg.initialize() 
             await app_tg.bot.delete_webhook() 
             await app_tg.bot.set_webhook(url=webhook_url)
             print(f"*** Webhook de Telegram configurado en: {webhook_url} ***")
             bot_initialized_on_webhook = True
+            
+        except (telegram.error.Conflict, telegram.error.BadRequest) as e:
+            # Captura errores comunes durante la configuración.
+            
+            # Si el error es por Flood Control, asumimos que otro worker tuvo éxito.
+            if "Flood control exceeded" in str(e):
+                logging.warning(f"Webhook setup failed due to Flood Control (other worker likely succeeded). Proceeding.")
+                bot_initialized_on_webhook = True # Asume que otro worker lo configuró
+            else:
+                logging.error(f"FATAL: Falló la configuración de webhook de PTB: {e}")
+                return jsonify({"status": "error", "message": "PTB Webhook Setup Failed"}), 500
+
         except Exception as e:
             logging.error(f"FATAL: Falló la configuración de webhook de PTB: {e}")
             return jsonify({"status": "error", "message": "PTB Webhook Setup Failed"}), 500
+            
     # ************************************************************
     
     # 1. Recibe el JSON de Telegram
