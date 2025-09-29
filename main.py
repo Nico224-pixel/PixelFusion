@@ -54,8 +54,25 @@ app_flask = Flask(__name__)
 app_tg = None 
 webhook_checked = False # Bandera para controlar la verificación del webhook
 
-# --- FUNCIÓN AUXILIAR ELIMINADA: run_async_task ELIMINADA ---
-# La función run_async_task ha sido eliminada para evitar el error asyncio.run() cannot be called from a running event loop
+# --- NUEVA FUNCIÓN AUXILIAR PARA CORRER ASÍNCRONAMENTE SIN BLOQUEAR ---
+def run_tg_update(update: Update):
+    """
+    Función síncrona simple que es ejecutada por gevent.spawn.
+    Llama a la corutina de PTB y la ejecuta en el bucle de Gevent/Async.
+    """
+    try:
+        # El método run_until_complete del loop ya existente 
+        # (gracias al monkey patching) es la forma correcta.
+        asyncio.get_event_loop().run_until_complete(app_tg.process_update(update))
+    except RuntimeError as e:
+        # Esto ocurre si el loop no se puede obtener o está cerrado, 
+        # pero es un intento más limpio que asyncio.run
+        logging.warning(f"Error al ejecutar update en greenlet: {e}")
+    except Exception as e:
+        logging.error(f"Fallo crítico en el procesamiento del update: {e}")
+
+# ----------------------------------------------------------------------
+
 
 @app_flask.route('/', methods=['GET'])
 async def health_check_endpoint(): 
@@ -72,7 +89,6 @@ async def health_check_endpoint():
     if not webhook_checked:
         try:
             # Aseguramos la inicialización del PTB en este worker
-            # Nota: Necesitamos usar initialize() aunque estemos en un worker de gunicorn/gevent.
             await app_tg.initialize() 
             webhook_url = f"{RENDER_URL}/telegram_webhook"
             webhook_info = await app_tg.bot.get_webhook_info()
@@ -92,7 +108,6 @@ async def health_check_endpoint():
 
         except Exception as e:
             # Si falla, simplemente logueamos, pero NO detenemos la respuesta 200 OK.
-            # El error "Event loop is closed" es común aquí, el flag lo mitiga, pero no lo elimina al 100%
             logging.error(f"ERROR: Fallo al obtener/configurar el webhook durante el Health Check: {e}")
             
     return "Bot is alive (Webhooks Active)", 200
@@ -127,7 +142,8 @@ async def telegram_webhook_endpoint():
             
     # FIX: Asegurar que el PTB Application esté inicializado en este worker
     try:
-        await app_tg.initialize()
+        # Aquí solo es necesario para el Health Check, pero se mantiene como precaución
+        await app_tg.initialize() 
     except Exception as e:
         logging.debug(f"PTB Application initialization check complete: {e}") 
         
@@ -149,10 +165,9 @@ async def telegram_webhook_endpoint():
 
 
     # 3. Delegar el procesamiento a una tarea asíncrona
-    # CRITICAL FIX: Usamos gevent.spawn para que el greenlet ejecute la corutina
-    # de PTB. Esto evita el timeout de Gunicorn y el RuntimeError de asyncio.run().
-    coroutine_to_run = app_tg.process_update(update)
-    gevent.spawn(coroutine_to_run) # <-- ¡Este es el cambio clave!
+    # CRITICAL FIX: Pasamos la función *callable* run_tg_update junto con el argumento 'update'
+    # Esto cumple con la firma de gevent.spawn(callable, *args) y evita el TypeError.
+    gevent.spawn(run_tg_update, update)
 
     # Devolver el 200 OK inmediatamente
     return jsonify({"status": "ok"}), 200
