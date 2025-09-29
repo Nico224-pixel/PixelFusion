@@ -13,8 +13,8 @@ from firebase_admin import firestore
 # --- PURCHASE CONSTANT ---
 # {price_usd: credits_to_add}
 PURCHASE_OPTIONS = {
-    "2.5": 5,    # $5 USD -> 5 Credits
-    "4": 10    # $8 USD -> 10 Credits
+    "2.5": 5,    # $2.5 USD -> 5 Credits
+    "4": 10    # $4 USD -> 10 Credits
 }
 
 # --- Auxiliary Function for Safe Editing (Handling BadRequest) ---
