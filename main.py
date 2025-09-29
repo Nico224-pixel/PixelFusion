@@ -3,10 +3,12 @@ import os
 import json
 from typing import Final 
 import asyncio 
+import sys # Agregado para usar sys.exit en caso de error fatal
 
 # --- CRITICAL FIX: Monkey Patching para Gevent/Gunicorn ---
 from gevent import monkey
-monkey.patch_all(subprocess=False) # Parchear todo excepto subprocessos (para evitar conflictos)
+# Asegúrate de que esto se ejecute lo antes posible.
+monkey.patch_all(subprocess=False) 
 # --------------------------------------------------------
 
 import firebase_admin
@@ -92,12 +94,9 @@ async def telegram_webhook_endpoint():
             bot_initialized_on_webhook = True
             
         except (telegram.error.Conflict, telegram.error.BadRequest) as e:
-            # Captura errores comunes durante la configuración.
-            
-            # Si el error es por Flood Control, asumimos que otro worker tuvo éxito.
             if "Flood control exceeded" in str(e):
                 logging.warning(f"Webhook setup failed due to Flood Control (other worker likely succeeded). Proceeding.")
-                bot_initialized_on_webhook = True # Asume que otro worker lo configuró
+                bot_initialized_on_webhook = True 
             else:
                 logging.error(f"FATAL: Falló la configuración de webhook de PTB: {e}")
                 return jsonify({"status": "error", "message": "PTB Webhook Setup Failed"}), 500
@@ -113,8 +112,18 @@ async def telegram_webhook_endpoint():
     # 2. Crea el objeto Update de Telegram
     update = Update.de_json(update_json, app_tg.bot)
 
-    # 3. Procesa el update asíncronamente
-    await app_tg.process_update(update)
+    # 3. CRITICAL FIX: Delegar el procesamiento a una tarea asíncrona
+    # Esto libera inmediatamente al worker de Gunicorn para que no haya timeout
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        # Esto ocurre si get_event_loop se llama desde un hilo sin loop asociado (Gunicorn/Gevent).
+        # Esto no debería pasar con patch_all, pero es un fail-safe.
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    # Crea una tarea para procesar la actualización y retorna inmediatamente el 200 OK.
+    loop.create_task(app_tg.process_update(update))
 
     return jsonify({"status": "ok"}), 200
 
@@ -130,8 +139,10 @@ try:
     print("Firebase inicializado y listo.")
 except KeyError:
     print("ERROR FATAL: 'FIREBASE_KEY' no existe o está vacía.")
+    sys.exit(1) # Finaliza si no hay clave de Firebase (crucial para la lógica)
 except Exception as e:
     print(f"ERROR FATAL al inicializar Firebase. Detalle: {e}")
+    sys.exit(1)
 finally:
     if not db_initialized:
         print("El bot funcionará sin lógica de créditos.")
@@ -196,6 +207,4 @@ initialize_telegram_bot()
 # ==========================================================
 if __name__ == '__main__':
     print("Bot reiniciado. Modo: Webhook (Ambiente Local/Test).")
-    # El comando de arranque de Gunicorn en Render ignora este bloque, 
-    # pero el resto del código ya ha definido las funciones de Flask y PTB.
     pass
