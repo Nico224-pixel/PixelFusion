@@ -17,6 +17,13 @@ PURCHASE_OPTIONS = {
     "4": 10      # $4 USD -> 10 Credits
 }
 
+# --- WEBHOOK MAPPING CONSTANT ---
+# IMPORTANTE: PayPal puede enviar el monto con dos decimales, ej: "2.50"
+WEBHOOK_CREDIT_MAP = {
+    "2.50": 5,
+    "4.00": 10
+}
+
 # --- Auxiliary Function for Safe Editing (Handling BadRequest) ---
 async def safe_edit(query, text, markup=None, parse_mode="Markdown"):
     """Attempts to edit the message text, using the caption as a fallback if it fails. Accepts the keyboard as 'markup'."""
@@ -162,6 +169,61 @@ async def buy_credits_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     
     await safe_edit(query, payment_msg, markup=markup, parse_mode="Markdown")
 
+def handle_paypal_webhook(data: dict):
+    """
+    Procesa el JSON de Webhook de PayPal. 
+    Esta función debe ser síncrona, ya que es llamada por Flask (no por Telegram).
+    """
+    logging.info(f"Received PayPal Webhook event: {data.get('event_type')}")
+
+    # 1. VERIFICACIÓN DE EVENTO (Solo procesar pagos completados)
+    # Debes usar el evento que PayPal envía para la captura de pago (ej. PAYMENT.CAPTURE.COMPLETED)
+    # El evento exacto depende de cómo configuraste la orden en PayPal.
+    if data.get('event_type') != 'PAYMENT.CAPTURE.COMPLETED': 
+          return
+
+    # 2. EXTRAER DATOS (Asumiendo que guardaste el user_id en el campo custom_id)
+    try:
+        resource = data['resource']
+        
+        # user_id debe ser pasado por tu checkout de PayPal en el campo 'custom_id'
+        # o 'invoice_id' para poder identificar a quién acreditar.
+        user_id = resource.get('custom_id') 
+        if not user_id:
+             logging.error("PayPal Webhook: custom_id (user_id) missing.")
+             return
+        
+        # Obtener el monto (ej. "2.50")
+        amount = resource['amount']['value']
+        currency = resource['amount']['currency_code']
+        
+        # 3. VERIFICAR MONTO Y CALCULAR CRÉDITOS
+        if currency != "USD" or amount not in WEBHOOK_CREDIT_MAP:
+            logging.warning(f"PayPal Webhook: Invalid currency or amount: {amount} {currency}")
+            return
+            
+        CREDITS_TO_ADD = WEBHOOK_CREDIT_MAP[amount]
+            
+    except KeyError as e:
+        logging.error(f"PayPal Webhook: Missing crucial data in resource: {e}")
+        return
+
+    # 4. ACREDITAR CRÉDITOS
+    db = get_firestore_client()
+    if db is None:
+        logging.error("DB unavailable for webhook credit update.")
+        return
+
+    user_ref = db.collection('users').document(str(user_id))
+
+    try:
+        user_ref.update({'paid_credits': firestore.Increment(CREDITS_TO_ADD)})
+        logging.info(f"SUCCESS: {CREDITS_TO_ADD} credits added to user {user_id} via PayPal webhook.")
+        
+        # TODO: Enviar mensaje al usuario (requiere inicializar un bot de Telegram dentro de esta función síncrona)
+        
+    except Exception as e:
+        logging.error(f"Error updating balance for user {user_id} via webhook: {e}")
 
 async def paypal_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """

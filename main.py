@@ -2,55 +2,73 @@ import logging
 import os
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Final 
 
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore 
 
+# --- FLASK Imports ---
+from flask import Flask, request, jsonify 
+
 # --- Imports de Telegram ---
 from telegram import Update 
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes 
 
 # Importa tus utilidades y handlers
-from handlers import start, style_selected, dithering_colors_selected, photo_handler, show_credits, buy_credits_callback, help_command, paypal_confirm_callback 
+from handlers import start, style_selected, dithering_colors_selected, photo_handler, show_credits, buy_credits_callback, help_command, paypal_confirm_callback, handle_paypal_webhook 
 from db_utils import get_firestore_client 
 
 
 # --- CONSTANTES ---
 TOKEN: Final = os.environ.get("TELEGRAM_BOT_TOKEN")
 MAX_FREE_CREDITS: Final = 5 
-# CAMBIO A INGLÉS
 WATERMARK_TEXT: Final = "FREE PIXELATION | @PixelFusionBot" 
 MAX_IMAGE_SIZE_BYTES: Final = 2 * 1024 * 1024 # 2 MB
 PAYPAL_CLIENT_ID: Final = os.environ.get("PAYPAL_CLIENT_ID", "SIMULATED_ID")
 PAYPAL_CLIENT_SECRET: Final = os.environ.get("PAYPAL_CLIENT_SECRET", "SIMULATED_SECRET")
 
 # ==========================================================
-# FUNCIÓN DEL SERVIDOR DUMMY PARA RENDER (NECESARIO)
+# INICIALIZACIÓN DE FLASK (reemplaza al servidor dummy)
 # ==========================================================
 
-def run_dummy_server():
-    """Inicia un servidor HTTP mínimo para que Render pueda detectar el puerto."""
-    try:
-        port = int(os.environ.get("PORT", 8080))
-    except ValueError:
-        port = 8080
+app_flask = Flask(__name__)
 
-    class HealthCheckHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header('Content-type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b"Bot is alive (Long Polling)")
+@app_flask.route('/', methods=['GET'])
+def health_check_endpoint():
+    """Endpoint de Health Check para Render."""
+    return "Bot is alive (Long Polling & Webhooks Active)", 200
 
+@app_flask.route('/paypal_webhook', methods=['POST'])
+def paypal_webhook_endpoint():
+    """
+    Endpoint dedicado a recibir notificaciones (Webhooks) de PayPal.
+    """
     try:
-        httpd = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-        print(f"*** Dummy HTTP server running on port {port} for Render Health Check. ***")
-        httpd.serve_forever()
+        data = request.json
+        logging.info("PayPal Webhook received.")
+        
+        # Llama al handler real de PayPal (ahora definido en handlers.py)
+        # Nota: La verificación de autenticidad de PayPal debe hacerse aquí antes de llamar al handler.
+        handle_paypal_webhook(data) 
+        
+        # Siempre debe retornar 200 para evitar que PayPal reintente.
+        return jsonify({"status": "success", "message": "Webhook processed"}), 200
+
     except Exception as e:
-        print(f"Error starting dummy server: {e}")
+        logging.error(f"Error processing PayPal webhook: {e}")
+        return jsonify({"status": "error", "message": "Internal processing error"}), 200
+    
+# ==========================================================
+# FUNCIÓN DE ARRANQUE DEL BOT (en hilo)
+# ==========================================================
+def run_telegram_bot(app_tg):
+    """Inicia el bot de Telegram en modo Long Polling."""
+    print("*** Starting Telegram Bot Long Polling... ***")
+    try:
+        app_tg.run_polling()
+    except Exception as e:
+        logging.critical(f"Telegram Bot Polling failed: {e}")
 
 # ==========================================================
 # INICIALIZACIÓN DE FIREBASE
@@ -76,47 +94,45 @@ async def buy_credits_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await show_credits(update, context)
 
 # ==========================================================
-# MAIN ARRANQUE DEL BOT
+# MAIN ARRANQUE DEL BOT Y SERVIDOR
 # ==========================================================
 if __name__ == '__main__':
     print("Bot reiniciado.")
-
-    # 1. INICIA EL SERVIDOR DUMMY EN UN HILO SEPARADO
-    threading.Thread(target=run_dummy_server, daemon=True).start()
     
-    # 2. CONFIGURACIÓN E INICIO DEL BOT
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.bot_data['MAX_FREE_CREDITS'] = MAX_FREE_CREDITS
-    app.bot_data['WATERMARK_TEXT'] = WATERMARK_TEXT
-    app.bot_data['MAX_IMAGE_SIZE_BYTES'] = MAX_IMAGE_SIZE_BYTES
-    app.bot_data['PAYPAL_CLIENT_ID'] = PAYPAL_CLIENT_ID
-    app.bot_data['PAYPAL_CLIENT_SECRET'] = PAYPAL_CLIENT_SECRET
+    # 1. CONFIGURACIÓN E INICIO DEL BOT DE TELEGRAM
+    app_tg = ApplicationBuilder().token(TOKEN).build() # Usamos app_tg
+    app_tg.bot_data['MAX_FREE_CREDITS'] = MAX_FREE_CREDITS
+    app_tg.bot_data['WATERMARK_TEXT'] = WATERMARK_TEXT
+    app_tg.bot_data['MAX_IMAGE_SIZE_BYTES'] = MAX_IMAGE_SIZE_BYTES
+    app_tg.bot_data['PAYPAL_CLIENT_ID'] = PAYPAL_CLIENT_ID
+    app_tg.bot_data['PAYPAL_CLIENT_SECRET'] = PAYPAL_CLIENT_SECRET
 
-    # 3. Handlers de comandos
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("buycredits", buy_credits_command))
-    app.add_handler(CommandHandler("balance", show_credits)) 
-    app.add_handler(CommandHandler("help", help_command)) 
+    # 2. Handlers de comandos (usando app_tg)
+    app_tg.add_handler(CommandHandler("start", start))
+    app_tg.add_handler(CommandHandler("buycredits", buy_credits_command))
+    app_tg.add_handler(CommandHandler("balance", show_credits)) 
+    app_tg.add_handler(CommandHandler("help", help_command)) 
     
-    # 4. Callbacks para acciones de usuario
-    app.add_handler(CallbackQueryHandler(show_credits, pattern="^show_credits$"))        
-    # Patrón corregido: Acepta números enteros y decimales (e.g., 2.5)
-    app.add_handler(CallbackQueryHandler(buy_credits_callback, pattern="^buy_credits_[0-9.]+$")) 
-    app.add_handler(CallbackQueryHandler(start, pattern="^start$"))                      
-    # Patrón corregido: Acepta números enteros y decimales para la confirmación
-    app.add_handler(CallbackQueryHandler(paypal_confirm_callback, pattern="^paypal_confirm_[0-9.]+_[0-9]+$"))
+    # 3. Callbacks para acciones de usuario (usando app_tg)
+    app_tg.add_handler(CallbackQueryHandler(show_credits, pattern="^show_credits$"))        
+    app_tg.add_handler(CallbackQueryHandler(buy_credits_callback, pattern="^buy_credits_[0-9.]+$")) 
+    app_tg.add_handler(CallbackQueryHandler(start, pattern="^start$"))                      
+    app_tg.add_handler(CallbackQueryHandler(paypal_confirm_callback, pattern="^paypal_confirm_[0-9.]+_[0-9]+$"))
 
-    # 5. Callbacks para Estilos
-    app.add_handler(CallbackQueryHandler(dithering_colors_selected, pattern="^(8|16|32)$"))
-    # Patrón corregido: Acepta CUALQUIER callback que NO sea solo números (enteros o decimales)
-    app.add_handler(CallbackQueryHandler(style_selected, pattern="^((?![0-9.]+$).)+$"))
+    # 4. Callbacks para Estilos (usando app_tg)
+    app_tg.add_handler(CallbackQueryHandler(dithering_colors_selected, pattern="^(8|16|32)$"))
+    app_tg.add_handler(CallbackQueryHandler(style_selected, pattern="^((?![0-9.]+$).)+$"))
     
-    # 6. Handlers de Mensajes
-    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, 
+    # 5. Handlers de Mensajes (usando app_tg)
+    app_tg.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+    app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, 
                                    lambda update, context: update.message.reply_text("🤔 Please use /start to choose a style or send me a photo to pixelate.")))
+    
+    # 6. INICIA EL BOT DE TELEGRAM EN UN HILO SEPARADO
+    telegram_thread = threading.Thread(target=run_telegram_bot, args=(app_tg,), daemon=True)
+    telegram_thread.start()
 
-
-    # 7. INICIA EL LONG POLLING EN EL HILO PRINCIPAL
-    print("*** Starting Telegram Bot Long Polling... ***")
-    app.run_polling()
+    # 7. INICIA EL SERVIDOR WEB DE FLASK (en el hilo principal, escucha el puerto)
+    port = int(os.environ.get("PORT", 8080))
+    print(f"*** Flask Webhook Server running on port {port} at http://0.0.0.0:{port} ***")
+    app_flask.run(host='0.0.0.0', port=port, debug=False)
