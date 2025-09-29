@@ -52,11 +52,45 @@ if not RENDER_URL:
 app_flask = Flask(__name__)
 # Variables globales para la app de Telegram y el estado de inicialización
 app_tg = None 
-# Eliminamos bot_initialized_on_webhook para forzar la reconfiguración en cada worker
+# Nueva bandera para la comprobación de estado de webhook
+webhook_status_checked = False 
+
 
 @app_flask.route('/', methods=['GET'])
-def health_check_endpoint():
-    """Endpoint de Health Check para Render."""
+async def health_check_endpoint(): # <--- AHORA ES ASÍNCRONO
+    """
+    Endpoint de Health Check para Render.
+    También se usa para chequear y configurar el webhook si es necesario.
+    """
+    global webhook_status_checked
+    
+    if app_tg is None:
+        return "Bot not ready (TG app is None)", 500
+
+    # Esta lógica solo se ejecuta la primera vez que un worker recibe el Health Check
+    if not webhook_status_checked:
+        try:
+            await app_tg.initialize()
+            webhook_info = await app_tg.bot.get_webhook_info()
+            webhook_url = f"{RENDER_URL}/telegram_webhook"
+            
+            # 1. Comprobar si la URL actual es la correcta
+            if webhook_info.url != webhook_url:
+                logging.warning(f"Webhook INCORRECTO: Telegram tiene '{webhook_info.url}'. Intentando corregir a '{webhook_url}'.")
+                
+                # Intentar corregir/configurar el webhook
+                await app_tg.bot.delete_webhook()
+                await app_tg.bot.set_webhook(url=webhook_url)
+                logging.info(f"*** Webhook CORREGIDO y configurado en: {webhook_url} ***")
+            else:
+                logging.info(f"Webhook OK: La URL actual registrada en Telegram es correcta: {webhook_info.url}")
+            
+            # Registrar que la comprobación inicial se realizó con éxito
+            webhook_status_checked = True 
+
+        except Exception as e:
+            logging.error(f"ERROR: Fallo al obtener/configurar el webhook durante el Health Check: {e}")
+            
     return "Bot is alive (Webhooks Active)", 200
 
 @app_flask.route('/paypal_webhook', methods=['POST'])
@@ -77,7 +111,6 @@ async def paypal_webhook_endpoint(): # <--- DEBE SER ASÍNCRONO
 async def telegram_webhook_endpoint():
     """
     Endpoint para recibir las actualizaciones de Telegram.
-    FUERZA la configuración del webhook en cada solicitud para diagnosticar.
     """
     
     # === DIAGNÓSTICO 1: Webhook Recibido ===
@@ -87,27 +120,6 @@ async def telegram_webhook_endpoint():
     if app_tg is None:
         logging.error("Telegram Application is not initialized.")
         return jsonify({"status": "error", "message": "Bot not ready"}), 500
-
-    # *** PASO CRÍTICO: Reconfiguración FORZADA del Webhook ***
-    # Esto garantiza que Telegram tenga la URL correcta.
-    webhook_url = f"{RENDER_URL}/telegram_webhook"
-    try:
-        await app_tg.initialize() 
-        # Intentamos borrar y configurar de nuevo forzadamente
-        await app_tg.bot.delete_webhook() 
-        await app_tg.bot.set_webhook(url=webhook_url)
-        logging.info(f"*** Webhook de Telegram RE-CONFIGURADO en: {webhook_url} ***")
-        
-    except (telegram.error.Conflict, telegram.error.BadRequest) as e:
-        # Maneja el error de 'Flood control' si un worker lo hace demasiado rápido.
-        if "Flood control exceeded" in str(e):
-            logging.warning("Webhook setup failed due to Flood Control (other worker likely succeeded). Proceeding.")
-        else:
-            # Si hay un error de BadRequest (ej. URL no válida), lo loguea.
-            logging.error(f"ERROR: Falló la configuración de webhook: {e}. ¿Es la URL correcta?")
-            
-    except Exception as e:
-        logging.error(f"ERROR: Error desconocido durante la configuración del webhook: {e}")
             
     # ************************************************************
     
