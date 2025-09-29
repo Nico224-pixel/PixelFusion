@@ -1,21 +1,47 @@
-# handlers.py (REESCRITO)
+# handlers.py (VERSIÓN FINAL CON UX MEJORADA Y BOTONES SEPARADOS)
 
 import logging
 from io import BytesIO
+import telegram 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from db_utils import get_user_data, decrement_credit, record_image_usage # Importamos record_image_usage
+from db_utils import get_user_data, decrement_credit, record_image_usage, get_firestore_client 
 from image_processing import pixelate_image, apply_watermark, STYLE_DEFAULTS
 from PIL import Image
+from firebase_admin import firestore # Para la simulación de compra
 
-# --- Ayuda de Interfaz ---
+# --- Función Auxiliar para Edición Segura (Manejando el BadRequest) ---
+async def safe_edit(query, text, markup=None, parse_mode="Markdown"):
+    """Intenta editar el texto del mensaje, usando el caption como fallback si falla."""
+    try:
+        await query.edit_message_text(text, reply_markup=markup, parse_mode=parse_mode)
+    except telegram.error.BadRequest as e:
+        if "message to edit" in str(e):
+            try:
+                # Intentar editar el caption (por si fuera una foto)
+                await query.edit_message_caption(caption=text, reply_markup=markup, parse_mode=parse_mode)
+            except Exception as e:
+                logging.error(f"Fallo la edición segura (texto y caption): {e}")
+                # Último recurso: enviar un nuevo mensaje
+                await query.message.reply_text(text, reply_markup=markup, parse_mode=parse_mode)
+        else:
+             pass 
+    except Exception as e:
+        logging.error(f"Error desconocido en safe_edit: {e}")
+
+# --- Ayuda de Interfaz: Menú de Estilos ---
 def get_style_keyboard():
-    """Genera el teclado para la selección de estilos."""
+    """Genera el teclado SÓLO para la selección de estilos, SIN botones de saldo."""
     keyboard = [[InlineKeyboardButton(name.upper(), callback_data=name)] for name in STYLE_DEFAULTS.keys()]
-    
-    # Botón de CTA (Llamada a la Acción)
-    keyboard.append([InlineKeyboardButton("💰 Consultar saldo /buycredits", url="https://t.me/PixelFusionBot?start=credits")]) # Reemplaza con tu bot_username
-    
+    return InlineKeyboardMarkup(keyboard)
+
+# --- Ayuda de Interfaz: Menú de Saldo/Compra ---
+def get_credit_action_keyboard():
+    """Genera el teclado para consultar saldo y simular compra."""
+    keyboard = [
+        [InlineKeyboardButton("💳 Simular Compra de Créditos", callback_data="buy_credits_sim")],
+        [InlineKeyboardButton("🎨 Elegir Nuevo Estilo /start", callback_data="start")] # Botón para volver al inicio
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -24,21 +50,43 @@ def get_style_keyboard():
 # ==========================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Muestra el saludo, el saldo actual y los botones de estilo."""
-    user_id = update.message.from_user.id
+    """Muestra el saludo, el saldo (en el texto) y los botones de estilo."""
+    # Maneja tanto el comando /start como el callback 'start'
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        user_id = query.from_user.id
+        # El mensaje original es el que tiene los botones de saldo/compra.
+        # Vamos a editar ese mensaje con el nuevo menú de estilos.
+    else:
+        user_id = update.message.from_user.id
+        query = None
+        
     MAX_FREE_CREDITS = context.application.bot_data.get('MAX_FREE_CREDITS', 10)
     user_data = get_user_data(user_id, MAX_FREE_CREDITS)
     
-    saldo_msg = f"✨ ¡Hola {update.message.from_user.first_name}! Soy el Bot de Pixel Art.\n\n"
-    saldo_msg += f"**💰 Saldo:** {user_data.get('total_credits', 0)} créditos (Gratuitos: {user_data.get('free_credits', 0)})"
-    saldo_msg += "\n\n**1.** Selecciona un estilo abajo. **2.** Envía tu foto 📸"
+    saldo_msg = f"✨ ¡Hola {update.effective_user.first_name}! Soy el Bot de Pixel Art.\n\n"
+    saldo_msg += f"**💰 Saldo:** **{user_data.get('total_credits', 0)}** créditos (Gratuitos: {user_data.get('free_credits', 0)})"
+    saldo_msg += "\n\n**1.** Selecciona un estilo abajo. **2.** Envía tu foto 📸\n"
+    saldo_msg += "Puedes consultar tu saldo detallado y comprar créditos con el comando /saldo."
     
-    await update.message.reply_text(saldo_msg, reply_markup=get_style_keyboard(), parse_mode="Markdown")
+    if query:
+        await safe_edit(query, saldo_msg, markup=get_style_keyboard(), parse_mode="Markdown")
+    else:
+        await update.message.reply_text(saldo_msg, reply_markup=get_style_keyboard(), parse_mode="Markdown")
 
 
 async def show_credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Muestra el saldo detallado del usuario (Nuevo comando /saldo)."""
-    user_id = update.message.from_user.id
+    """Muestra el saldo detallado del usuario (comando /saldo o botón CALLBACK)."""
+    
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        user_id = query.from_user.id
+    else:
+        user_id = update.message.from_user.id
+        query = None
+    
     MAX_FREE_CREDITS = context.application.bot_data.get('MAX_FREE_CREDITS', 10)
     user_data = get_user_data(user_id, MAX_FREE_CREDITS)
 
@@ -47,9 +95,48 @@ async def show_credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   - **Créditos Gratuitos:** **{user_data.get('free_credits', 0)}** (Se recargan semanalmente hasta {MAX_FREE_CREDITS})\n"
         f"   - **Créditos Comprados:** **{user_data.get('paid_credits', 0)}** (Imágenes sin marca de agua)\n"
         f"   - **TOTAL:** **{user_data.get('total_credits', 0)}** créditos.\n\n"
-        "Usa /buycredits para recargar y eliminar la marca de agua."
+        "Pulsa 'Simular Compra' para recargar **{context.application.bot_data.get('CREDITS_TO_ADD', 5)}** créditos y eliminar la marca de agua."
     )
-    await update.message.reply_text(saldo_msg, parse_mode="Markdown")
+    
+    # Enviar la respuesta
+    if query:
+        await safe_edit(query, saldo_msg, markup=get_credit_action_keyboard(), parse_mode="Markdown")
+    else:
+        await update.message.reply_text(saldo_msg, reply_markup=get_credit_action_keyboard(), parse_mode="Markdown")
+
+
+async def buy_credits_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Simulación de compra de créditos desde un callback de botón."""
+    query = update.callback_query
+    await query.answer("Procesando compra simulada...")
+    
+    db = get_firestore_client()
+    user_id = query.from_user.id
+    CREDITS_TO_ADD = context.application.bot_data.get('CREDITS_TO_ADD', 5)
+
+    if db is None:
+        await safe_edit(query, "❌ La base de datos no está disponible. No se puede recargar.")
+        return
+
+    user_ref = db.collection('users').document(str(user_id))
+
+    try:
+        user_ref.update({'paid_credits': firestore.Increment(CREDITS_TO_ADD)})
+        
+        # Muestra el resultado de la compra y el saldo actualizado
+        MAX_FREE_CREDITS = context.application.bot_data.get('MAX_FREE_CREDITS', 10)
+        user_data_after = get_user_data(user_id, MAX_FREE_CREDITS)
+        
+        saldo_msg = (
+            f"✅ ¡Compra simulada exitosa! Se han añadido **{CREDITS_TO_ADD}** créditos a tu cuenta.\n\n"
+            f"   - **Nuevo Saldo Total:** **{user_data_after.get('total_credits', 0)}** créditos.\n"
+            "Úsalos para generar imágenes sin marca de agua."
+        )
+        await safe_edit(query, saldo_msg, markup=get_credit_action_keyboard(), parse_mode="Markdown")
+        
+    except Exception as e:
+        logging.error(f"Error al simular la recarga de créditos: {e}")
+        await safe_edit(query, "❌ Error al actualizar tu saldo. Intenta de nuevo.")
 
 
 async def style_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -60,12 +147,14 @@ async def style_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["style"] = style
 
     if style != "dithering":
-        # Flujo para estilos fijos (NES, SNES, etc.)
         context.user_data.pop("dithering_colors", None)
-        await query.edit_message_text(f"✅ Estilo **{style.upper()}** seleccionado.\n\nAhora, **¡envía la foto 📸!**", parse_mode="Markdown")
+        
+        await safe_edit(query, 
+                        f"✅ Estilo **{style.upper()}** seleccionado.\n\nAhora, **¡envía la foto 📸!**", 
+                        parse_mode="Markdown")
+        
 
     else:
-        # Flujo para Dithering (requiere selección de colores)
         context.user_data.pop("dithering_colors", None)
         keyboard = [
              [InlineKeyboardButton("8 Colores", callback_data="8")],
@@ -73,7 +162,9 @@ async def style_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
              [InlineKeyboardButton("32 Colores", callback_data="32")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("🎨 **Dithering** seleccionado. ¿Cuántos colores quieres usar?", reply_markup=reply_markup)
+        await safe_edit(query, 
+                        "🎨 **Dithering** seleccionado. ¿Cuántos colores quieres usar?", 
+                        reply_markup=reply_markup)
 
 
 async def dithering_colors_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -85,8 +176,9 @@ async def dithering_colors_selected(update: Update, context: ContextTypes.DEFAUL
     context.user_data["style"] = "dithering"
     context.user_data["dithering_colors"] = colors
 
-    style = context.user_data["style"]
-    await query.edit_message_text(f"✅ **Dithering con {colors} colores** listo.\n\nAhora, **¡envía la foto 📸!**", parse_mode="Markdown")
+    await safe_edit(query, 
+                    f"✅ **Dithering con {colors} colores** listo.\n\nAhora, **¡envía la foto 📸!**", 
+                    parse_mode="Markdown")
 
 
 # ==========================================================
@@ -98,19 +190,20 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # 1. VERIFICACIÓN: ¿Se seleccionó un estilo?
     if "style" not in context.user_data:
+        # Usa get_style_keyboard para permitir al usuario elegir sin hacer /start
         await msg.reply_text("🤔 Por favor, selecciona un estilo primero:", reply_markup=get_style_keyboard())
         return
 
-    # Inyección de constantes del bot_data
+    # Inyección de constantes
     MAX_FREE_CREDITS = context.application.bot_data.get('MAX_FREE_CREDITS', 10) 
     WATERMARK_TEXT = context.application.bot_data.get('WATERMARK_TEXT', "WM")
-    MAX_SIZE = context.application.bot_data.get('MAX_IMAGE_SIZE_BYTES', 5242880) 
+    MAX_SIZE = context.application.bot_data.get('MAX_IMAGE_SIZE_BYTES', 2097152) 
 
     user_id = msg.from_user.id
     style = context.user_data["style"]
     dithering_colors = context.user_data.get("dithering_colors")
     
-    # 2. VERIFICACIÓN DE TAMAÑO DEL ARCHIVO
+    # 2. VERIFICACIÓN DE TAMAÑO DEL ARCHIVO (2 MB)
     file_info = msg.photo[-1]
     file_size = file_info.file_size
 
@@ -132,7 +225,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # El usuario tiene saldo: Descontar crédito atómicamente
         decrement_credit(user_id) 
         
-        # Recuperar el saldo ACTUALIZADO después del descuento para los mensajes
+        # Recuperar el saldo ACTUALIZADO después del descuento
         user_data_after = get_user_data(user_id, MAX_FREE_CREDITS)
         free_credits = user_data_after.get('free_credits', 0)
         paid_credits = user_data_after.get('paid_credits', 0)
@@ -148,7 +241,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Mensaje de advertencia de UX mejorado
         await msg.reply_text(
             f"😔 **¡Créditos agotados!** Tu imagen se procesará, pero se le añadirá una **marca de agua**."
-            f"\n\n✨ Tienes {free_credits + paid_credits} créditos totales. Usa /buycredits para recargar y evitar la marca de agua.",
+            f"\n\n✨ Tienes {free_credits + paid_credits} créditos totales. Usa /saldo o /buycredits para recargar y evitar la marca de agua.",
             parse_mode="Markdown"
         )
     # ----------------------------------------------------
@@ -157,7 +250,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=msg.chat_id, action="upload_photo")
     await msg.reply_text("⚙️ **¡Foto recibida!** Procesando imagen, espera un momento...", parse_mode="Markdown")
 
-    # 5. DESCARGA Y PROCESAMIENTO (Lógica mantenida)
+    # 5. DESCARGA Y PROCESAMIENTO 
     photo_file = await file_info.get_file()
     photo_bytes = BytesIO()
 
@@ -190,20 +283,16 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if style == "dithering" and dithering_colors:
         caption += f" ({dithering_colors} colores)"
 
-    # Mensaje de saldo DETALLADO después del uso
     if not apply_wm:
         caption += f"\n\n💰 Te queda un saldo de **{total_credits_remaining}** créditos.\n(Gratuitos: {free_credits}, Comprados: {paid_credits})"
     else:
-         caption += "\n\n✨ Generada con marca de agua. ¡Recarga con /buycredits para quitársela!"
+         caption += "\n\n✨ Generada con marca de agua. ¡Recarga con /saldo o /buycredits para quitársela!"
 
 
+    # Sin reply_markup final
     await msg.reply_photo(photo=out_bytes, 
                           caption=caption, 
-                          parse_mode="Markdown",
-                          reply_markup=InlineKeyboardMarkup([
-                              [InlineKeyboardButton("🎨 Cambiar Estilo /start", callback_data="ignore")]
-                          ])
-                          )
+                          parse_mode="Markdown")
 
     # 7. REGISTRAR USO
     record_image_usage(user_id=user_id, style=style, is_watermarked=apply_wm)

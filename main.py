@@ -3,9 +3,11 @@ import os
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Final 
 
 import firebase_admin
 from firebase_admin import credentials
+# Importamos firestore solo para fines de tipado y simulación en buy_credits_command
 from firebase_admin import firestore
 
 # --- Imports de Telegram ---
@@ -13,26 +15,24 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes 
 
 # Importa tus utilidades y handlers
-from handlers import start, style_selected, dithering_colors_selected, photo_handler, show_credits # <<< AÑADIDO: show_credits
+from handlers import start, style_selected, dithering_colors_selected, photo_handler, show_credits, buy_credits_callback 
 from db_utils import get_firestore_client 
 from PIL import Image
 
 # --- CONSTANTES ---
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-MAX_FREE_CREDITS = 10 
-WATERMARK_TEXT = "PIXELADO GRATIS | @PixelFusionBot"
-# *** CAMBIADO ***: Reducir el límite de tamaño de imagen a 2 MB
-MAX_IMAGE_SIZE_BYTES = 2 * 1024 * 1024 
+TOKEN: Final = os.environ.get("TELEGRAM_BOT_TOKEN")
+MAX_FREE_CREDITS: Final = 10 
+WATERMARK_TEXT: Final = "PIXELADO GRATIS | @PixelFusionBot"
+# Límite de imagen en 2 MB
+MAX_IMAGE_SIZE_BYTES: Final = 2 * 1024 * 1024 
+CREDITS_TO_ADD: Final = 5 # Créditos fijos para la simulación de compra
 
 # ==========================================================
-# FUNCIÓN DEL SERVIDOR DUMMY PARA RENDER (¡LA CLAVE!)
+# FUNCIÓN DEL SERVIDOR DUMMY PARA RENDER (NECESARIO)
 # ==========================================================
 
 def run_dummy_server():
-    """
-    Inicia un servidor HTTP mínimo en un hilo separado para que Render
-    pueda detectar un puerto abierto y mantener el Web Service activo.
-    """
+    """Inicia un servidor HTTP mínimo en un hilo separado para que Render pueda detectar el puerto."""
     try:
         port = int(os.environ.get("PORT", 8080))
     except ValueError:
@@ -52,9 +52,8 @@ def run_dummy_server():
     except Exception as e:
         print(f"Error starting dummy server: {e}")
 
-
 # ==========================================================
-# INICIALIZACIÓN DE FIREBASE (Mantenido)
+# INICIALIZACIÓN DE FIREBASE
 # ==========================================================
 db_initialized = False
 try:
@@ -71,33 +70,15 @@ finally:
     if not db_initialized:
         print("El bot funcionará sin lógica de créditos.")
 
+# --- HANDLER DE PRUEBA: Recargar créditos (Llamada al menú de Saldo) ---
+async def buy_credits_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Maneja el comando /buycredits, redirige al menú de saldo."""
+    # buy_credits_command y /saldo hacen lo mismo: mostrar el menú de créditos
+    await show_credits(update, context)
 
-# --- HANDLER DE PRUEBA: Recargar créditos (Mantenido) ---
-async def buy_credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Lógica de simulación para añadir créditos
-    db = get_firestore_client()
-    user_id = update.message.from_user.id
-
-    if db is None:
-        await update.message.reply_text("❌ La base de datos no está disponible. No se puede recargar.")
-        return
-
-    CREDITS_TO_ADD = 5
-    user_ref = db.collection('users').document(str(user_id))
-
-    try:
-        user_ref.update({'paid_credits': firestore.Increment(CREDITS_TO_ADD)})
-        await update.message.reply_text(
-            f"✅ ¡Compra simulada exitosa! Se han añadido **{CREDITS_TO_ADD}** créditos a tu cuenta.\n"
-            "Úsalos para generar imágenes sin marca de agua.",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logging.error(f"Error al simular la recarga de créditos: {e}")
-        await update.message.reply_text("❌ Error al actualizar tu saldo. Intenta de nuevo.")
 
 # ==========================================================
-# MAIN ARRANQUE DEL BOT (Modificado)
+# MAIN ARRANQUE DEL BOT
 # ==========================================================
 if __name__ == '__main__':
     print("Bot reiniciado.")
@@ -110,21 +91,29 @@ if __name__ == '__main__':
     app.bot_data['MAX_FREE_CREDITS'] = MAX_FREE_CREDITS
     app.bot_data['WATERMARK_TEXT'] = WATERMARK_TEXT
     app.bot_data['MAX_IMAGE_SIZE_BYTES'] = MAX_IMAGE_SIZE_BYTES
+    app.bot_data['CREDITS_TO_ADD'] = CREDITS_TO_ADD # Para la simulación de compra
 
     # 3. Handlers
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("buycredits", buy_credits))
-    app.add_handler(CommandHandler("saldo", show_credits)) # <<< AÑADIDO: Handler de saldo
+    app.add_handler(CommandHandler("buycredits", buy_credits_command))
+    app.add_handler(CommandHandler("saldo", show_credits)) 
+    
+    # 4. Callbacks para acciones de usuario
+    app.add_handler(CallbackQueryHandler(show_credits, pattern="^show_credits$"))        # Botón para ir al menú de saldo
+    app.add_handler(CallbackQueryHandler(buy_credits_callback, pattern="^buy_credits_sim$")) # Botón para simular compra
+    app.add_handler(CallbackQueryHandler(start, pattern="^start$"))                      # Botón para volver al inicio
+
+    # 5. Callbacks para Estilos
     app.add_handler(CallbackQueryHandler(dithering_colors_selected, pattern="^(8|16|32)$"))
     app.add_handler(CallbackQueryHandler(style_selected, pattern="^(?![8|16|32]$).+"))
     
-    # El photo_handler ahora requiere que el usuario haya seleccionado un estilo primero
+    # 6. Handlers de Mensajes
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     # Maneja texto/stickers inesperados (Mejora de UX)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, 
                                    lambda update, context: update.message.reply_text("🤔 Por favor, usa /start para elegir un estilo o envíame una foto para pixelar.")))
 
 
-    # 4. INICIA EL LONG POLLING EN EL HILO PRINCIPAL
+    # 7. INICIA EL LONG POLLING EN EL HILO PRINCIPAL
     print("*** Starting Telegram Bot Long Polling... ***")
     app.run_polling()
