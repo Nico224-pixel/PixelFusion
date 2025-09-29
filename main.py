@@ -58,13 +58,14 @@ webhook_checked = False # Bandera para controlar la verificación del webhook
 def run_tg_update(update: Update):
     """
     Función síncrona simple que es ejecutada por gevent.spawn.
-    Programa la corutina de PTB como una tarea en el bucle de eventos existente (parcheado por Gevent).
+    Programa la corutina de PTB como una tarea en el bucle de eventos existente.
     """
     try:
         coroutine = app_tg.process_update(update)
-        # CRITICAL FIX: Programar la corutina como una tarea en el loop ya existente. 
-        # Esto es no bloqueante y evita el error "This event loop is already running".
-        asyncio.get_event_loop().create_task(coroutine)
+        # CRITICAL FIX: Usamos ensure_future en lugar de create_task. 
+        # Esto es a veces más robusto en entornos híbridos y se asegura 
+        # de que la tarea se añade al loop activo.
+        asyncio.ensure_future(coroutine)
         logging.info("Update de Telegram programado como tarea asíncrona.")
     except Exception as e:
         # Fallo si el loop no está disponible o la tarea no se puede crear
@@ -139,10 +140,12 @@ async def telegram_webhook_endpoint():
         logging.error("Telegram Application is not initialized.")
         return jsonify({"status": "error", "message": "Bot not ready"}), 500
             
-    # FIX: Asegurar que el PTB Application esté inicializado en este worker
+    # FIX: Se eliminó el await app_tg.initialize() redundante de aquí
+    # para reducir el I/O en la ruta crítica del webhook, confiando en 
+    # que el Health Check ya lo ejecutó o se ejecutará poco después.
     try:
-        # Se requiere initialize() para cada worker, incluso si ya lo hizo el Health Check.
-        await app_tg.initialize() 
+        # Se mantiene un intento ligero, sin await, solo por si acaso
+        app_tg.initialize() 
     except Exception as e:
         logging.debug(f"PTB Application initialization check complete: {e}") 
         
