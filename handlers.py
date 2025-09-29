@@ -12,7 +12,7 @@ from firebase_admin import firestore
 
 # --- Función Auxiliar para Edición Segura (Manejando el BadRequest) ---
 async def safe_edit(query, text, markup=None, parse_mode="Markdown"):
-    """Intenta editar el texto del mensaje, usando el caption como fallback si falla."""
+    """Intenta editar el texto del mensaje, usando el caption como fallback si falla. Acepta el teclado como 'markup'."""
     try:
         await query.edit_message_text(text, reply_markup=markup, parse_mode=parse_mode)
     except telegram.error.BadRequest as e:
@@ -117,7 +117,6 @@ async def buy_credits_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     user_ref = db.collection('users').document(str(user_id))
 
     try:
-        # *** CORRECCIÓN CRUCIAL: Sumar a 'paid_credits' ***
         user_ref.update({'paid_credits': firestore.Increment(CREDITS_TO_ADD)})
         
         MAX_FREE_CREDITS = context.application.bot_data.get('MAX_FREE_CREDITS', 10)
@@ -158,9 +157,11 @@ async def style_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
              [InlineKeyboardButton("32 Colores", callback_data="32")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # *** CORRECCIÓN: Usar 'markup' en lugar de 'reply_markup' ***
         await safe_edit(query, 
                         "🎨 **Dithering** seleccionado. ¿Cuántos colores quieres usar?", 
-                        reply_markup=reply_markup)
+                        markup=reply_markup)
 
 
 async def dithering_colors_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -277,7 +278,6 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not apply_wm:
         caption += f"\n\n💰 Te queda un saldo de **{total_credits_remaining}** créditos.\n(Gratuitos: {free_credits}, Comprados: {paid_credits})"
     else:
-         # *** CORRECCIÓN FINAL: Solo menciona /buycredits para recargar ***
          caption += "\n\n✨ Generada con marca de agua. ¡Recarga con **/buycredits** para quitársela!"
 
 
