@@ -10,6 +10,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # --- CRITICAL FIX: Monkey Patching para Gevent/Gunicorn ---
 from gevent import monkey
+import gevent # <-- Importar gevent para usar gevent.spawn
 # Asegúrate de que esto se ejecute lo antes posible.
 monkey.patch_all(subprocess=False) 
 # --------------------------------------------------------
@@ -22,14 +23,15 @@ from firebase_admin import firestore
 from flask import Flask, request, jsonify 
 
 # --- Imports de Telegram ---
-import telegram # Import telegram for error handling
+import telegram 
 from telegram import Update 
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes 
 
 # Importa tus utilidades y handlers
 from handlers import start, style_selected, dithering_colors_selected, photo_handler, show_credits, buy_credits_callback, help_command, paypal_confirm_callback, handle_paypal_webhook 
 from db_utils import get_firestore_client 
-import paypal_utils 
+# paypal_utils no se usa directamente aquí, se asume que está en el ambiente
+# import paypal_utils 
 
 
 # --- CONSTANTES ---
@@ -52,38 +54,43 @@ if not RENDER_URL:
 app_flask = Flask(__name__)
 # Variables globales para la app de Telegram y el estado de inicialización
 app_tg = None 
-
+webhook_checked = False # Bandera para controlar la verificación del webhook
 
 @app_flask.route('/', methods=['GET'])
 async def health_check_endpoint(): 
     """
     Endpoint de Health Check para Render.
-    Chequea y configura el webhook si es necesario.
+    Chequea y configura el webhook UNA SOLA VEZ por worker para evitar errores de bucle cerrado.
     """
+    global webhook_checked 
     
     if app_tg is None:
         return "Bot not ready (TG app is None)", 500
 
-    try:
-        # Aseguramos la inicialización del PTB en este worker
-        await app_tg.initialize() 
-        webhook_info = await app_tg.bot.get_webhook_info()
-        webhook_url = f"{RENDER_URL}/telegram_webhook"
-        
-        # 1. Comprobar si la URL actual es la correcta
-        if webhook_info.url != webhook_url:
-            logging.warning(f"Webhook INCORRECTO: Telegram tiene '{webhook_info.url}'. Intentando corregir a '{webhook_url}'.")
+    # Ejecutar la verificación del webhook solo si aún no se ha hecho en este worker.
+    if not webhook_checked:
+        try:
+            # Aseguramos la inicialización del PTB en este worker
+            await app_tg.initialize() 
+            webhook_url = f"{RENDER_URL}/telegram_webhook"
+            webhook_info = await app_tg.bot.get_webhook_info()
             
-            # Intentar corregir/configurar el webhook
-            await app_tg.bot.delete_webhook()
-            await app_tg.bot.set_webhook(url=webhook_url)
-            logging.info(f"*** Webhook CORREGIDO y configurado en: {webhook_url} ***")
-        else:
-            logging.info(f"Webhook OK: La URL actual registrada en Telegram es correcta: {webhook_info.url}")
-        
+            # 1. Comprobar si la URL actual es la correcta
+            if webhook_info.url != webhook_url:
+                logging.warning(f"Webhook INCORRECTO: Telegram tiene '{webhook_info.url}'. Intentando corregir a '{webhook_url}'.")
+                
+                # Intentar corregir/configurar el webhook
+                await app_tg.bot.delete_webhook()
+                await app_tg.bot.set_webhook(url=webhook_url)
+                logging.info(f"*** Webhook CORREGIDO y configurado en: {webhook_url} ***")
+            else:
+                logging.info(f"Webhook OK: La URL actual registrada en Telegram es correcta: {webhook_info.url}")
+            
+            webhook_checked = True # Marcar como verificado después del éxito
 
-    except Exception as e:
-        logging.error(f"ERROR: Fallo al obtener/configurar el webhook durante el Health Check: {e}")
+        except Exception as e:
+            # Si falla, simplemente logueamos, pero NO detenemos la respuesta 200 OK.
+            logging.error(f"ERROR: Fallo al obtener/configurar el webhook durante el Health Check: {e}")
             
     return "Bot is alive (Webhooks Active)", 200
 
@@ -95,6 +102,8 @@ async def paypal_webhook_endpoint():
     try:
         data = request.json
         logging.info("PayPal Webhook received.")
+        # handle_paypal_webhook debe ser awaitable si llama a código async o a db_utils que son síncronos
+        # Lo mantendremos asíncrono para compatibilidad si haces llamadas al bot
         await handle_paypal_webhook(data) 
         return jsonify({"status": "success", "message": "Webhook processed"}), 200
     except Exception as e:
@@ -140,9 +149,9 @@ async def telegram_webhook_endpoint():
 
 
     # 3. Delegar el procesamiento a una tarea asíncrona
-    # CRITICAL FIX: Usamos asyncio.create_task() directamente en el contexto asíncrono.
-    # Esto le dice a Gevent (parcheado por monkey.patch_all()) que ejecute esta tarea cooperativamente.
-    asyncio.create_task(app_tg.process_update(update))
+    # CRITICAL FIX: Usamos gevent.spawn para ejecutar la coroutine de forma cooperativa.
+    # Esto libera el worker para que envíe el 200 OK inmediatamente.
+    gevent.spawn(app_tg.process_update, update)
 
     return jsonify({"status": "ok"}), 200
 
