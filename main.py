@@ -22,7 +22,6 @@ TOKEN: Final = os.environ.get("TELEGRAM_BOT_TOKEN")
 MAX_FREE_CREDITS: Final = 10 
 WATERMARK_TEXT: Final = "PIXELADO GRATIS | @PixelFusionBot"
 MAX_IMAGE_SIZE_BYTES: Final = 2 * 1024 * 1024 # 2 MB
-CREDITS_TO_ADD: Final = 5 # Créditos fijos para la simulación de compra
 
 # ==========================================================
 # FUNCIÓN DEL SERVIDOR DUMMY PARA RENDER (NECESARIO)
@@ -87,7 +86,6 @@ if __name__ == '__main__':
     app.bot_data['MAX_FREE_CREDITS'] = MAX_FREE_CREDITS
     app.bot_data['WATERMARK_TEXT'] = WATERMARK_TEXT
     app.bot_data['MAX_IMAGE_SIZE_BYTES'] = MAX_IMAGE_SIZE_BYTES
-    app.bot_data['CREDITS_TO_ADD'] = CREDITS_TO_ADD # Para la simulación de compra
 
     # 3. Handlers de comandos
     app.add_handler(CommandHandler("start", start))
@@ -96,7 +94,7 @@ if __name__ == '__main__':
     
     # 4. Callbacks para acciones de usuario
     app.add_handler(CallbackQueryHandler(show_credits, pattern="^show_credits$"))        
-    app.add_handler(CallbackQueryHandler(buy_credits_callback, pattern="^buy_credits_sim$")) 
+    app.add_handler(CallbackQueryHandler(buy_credits_callback, pattern="^buy_credits_[0-9]+$")) 
     app.add_handler(CallbackQueryHandler(start, pattern="^start$"))                      
 
     # 5. Callbacks para Estilos
