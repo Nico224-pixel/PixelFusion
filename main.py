@@ -7,7 +7,7 @@ from typing import Final
 
 import firebase_admin
 from firebase_admin import credentials
-from firebase_admin import firestore # Importado para fines de tipado y simulación
+from firebase_admin import firestore 
 
 # --- Imports de Telegram ---
 from telegram import Update 
@@ -100,13 +100,16 @@ if __name__ == '__main__':
     
     # 4. Callbacks para acciones de usuario
     app.add_handler(CallbackQueryHandler(show_credits, pattern="^show_credits$"))        
-    app.add_handler(CallbackQueryHandler(buy_credits_callback, pattern="^buy_credits_[0-9]+$")) 
+    # Patrón corregido: Acepta números enteros y decimales (e.g., 2.5)
+    app.add_handler(CallbackQueryHandler(buy_credits_callback, pattern="^buy_credits_[0-9.]+$")) 
     app.add_handler(CallbackQueryHandler(start, pattern="^start$"))                      
-    app.add_handler(CallbackQueryHandler(paypal_confirm_callback, pattern="^paypal_confirm_[0-9]+_[0-9]+$"))
+    # Patrón corregido: Acepta números enteros y decimales para la confirmación
+    app.add_handler(CallbackQueryHandler(paypal_confirm_callback, pattern="^paypal_confirm_[0-9.]+_[0-9]+$"))
 
     # 5. Callbacks para Estilos
     app.add_handler(CallbackQueryHandler(dithering_colors_selected, pattern="^(8|16|32)$"))
-    app.add_handler(CallbackQueryHandler(style_selected, pattern="^(?![8|16|32]$).+"))
+    # Patrón corregido: Acepta CUALQUIER callback que NO sea solo números (enteros o decimales)
+    app.add_handler(CallbackQueryHandler(style_selected, pattern="^((?![0-9.]+$).)+$"))
     
     # 6. Handlers de Mensajes
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
