@@ -140,25 +140,27 @@ if __name__ == '__main__':
     
     # 6. INICIA EL BOT DE TELEGRAM EN UN HILO SEPARADO
     if RENDER_URL and TOKEN:
-            # La URL final donde Telegram debe enviar los mensajes
-            webhook_url = f"{RENDER_URL}/telegram_webhook"
+        # La URL final donde Telegram debe enviar los mensajes
+        webhook_url = f"{RENDER_URL}/telegram_webhook"
+        
+        # Setea la URL del webhook de forma asíncrona
+        async def set_webhook_and_initialize(): # <- RENOMBRADO
+            # *** PASO CRÍTICO: Inicializar la aplicación ***
+            await app_tg.initialize() # <--- ¡AÑADIR ESTA LÍNEA!
             
-            # Setea la URL del webhook de forma asíncrona
-            async def set_webhook():
-                # Limpia cualquier configuración anterior
-                await app_tg.bot.delete_webhook() 
-                # Establece la nueva URL
-                await app_tg.bot.set_webhook(url=webhook_url)
-                print(f"*** Webhook de Telegram configurado en: {webhook_url} ***")
+            # Limpia cualquier configuración anterior
+            await app_tg.bot.delete_webhook() 
+            # Establece la nueva URL
+            await app_tg.bot.set_webhook(url=webhook_url)
+            print(f"*** Webhook de Telegram configurado en: {webhook_url} ***")
 
-            # Ejecuta la función asíncrona para configurar el webhook
-            # Se necesita un loop de eventos, por eso usamos asyncio.run() aquí UNA SOLA VEZ
-            # ¡IMPORTANTE! Esto debe ocurrir ANTES de iniciar Flask.
-            try:
-                asyncio.run(set_webhook())
-            except RuntimeError as e:
-                # Esto puede fallar si ya hay un loop corriendo, pero Render generalmente lo permite.
-                print(f"Advertencia: No se pudo configurar el webhook en el hilo principal: {e}")
+        # Ejecuta la función asíncrona para configurar el webhook
+        try:
+            # Ejecuta la nueva función
+            asyncio.run(set_webhook_and_initialize()) 
+        except RuntimeError as e:
+            # Esto puede fallar si ya hay un loop corriendo, pero Render generalmente lo permite.
+            print(f"Advertencia: No se pudo configurar el webhook en el hilo principal: {e}")
 
 
     # 7. INICIA EL SERVIDOR WEB DE FLASK (en el hilo principal, escucha el puerto)
