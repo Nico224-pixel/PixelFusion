@@ -37,6 +37,7 @@ RENDER_URL: Final = os.environ.get("RENDER_EXTERNAL_URL")
 app_flask = Flask(__name__)
 # Variable global para la app de Telegram (para pasarla a la ruta de Flask)
 app_tg = None 
+bot_initialized_on_webhook = False 
 
 @app_flask.route('/', methods=['GET'])
 def health_check_endpoint():
@@ -60,23 +61,41 @@ def paypal_webhook_endpoint():
 @app_flask.route('/telegram_webhook', methods=['POST'])
 async def telegram_webhook_endpoint():
     """
-    NUEVA RUTA: Endpoint para recibir las actualizaciones de Telegram.
+    Endpoint para recibir las actualizaciones de Telegram.
+    Realiza la inicialización de la app_tg si es la primera vez.
     """
+    global bot_initialized_on_webhook
+    
     if app_tg is None:
         logging.error("Telegram Application is not initialized.")
         return jsonify({"status": "error", "message": "Bot not ready"}), 500
 
-    # 1. Recibe el JSON de Telegram
+    # *** PASO CRÍTICO: Inicialización Condicional de Telegram ***
+    if not bot_initialized_on_webhook:
+        # Esto se ejecuta solo la primera vez que Telegram envía un mensaje.
+        webhook_url = f"{RENDER_URL}/telegram_webhook"
+        try:
+            await app_tg.initialize() 
+            await app_tg.bot.delete_webhook() 
+            await app_tg.bot.set_webhook(url=webhook_url)
+            print(f"*** Webhook de Telegram inicializado y configurado en: {webhook_url} ***")
+            bot_initialized_on_webhook = True
+        except Exception as e:
+            logging.error(f"FATAL: Fallo la inicialización de PTB: {e}")
+            return jsonify({"status": "error", "message": "PTB Init Failed"}), 500
+    # ************************************************************
+        # 1. Recibe el JSON de Telegram
     update_json = request.json
-
     # 2. Crea el objeto Update de Telegram
     update = Update.de_json(update_json, app_tg.bot)
 
     # 3. Procesa el update asíncronamente
-    # Usa process_update para que Application procese el mensaje
     await app_tg.process_update(update)
 
     return jsonify({"status": "ok"}), 200
+
+# ... (El código de Firebase se mantiene igual) ...
+# ... (Los Handlers se mantienen igual) ...
 
 # ==========================================================
 # INICIALIZACIÓN DE FIREBASE
@@ -137,34 +156,8 @@ if __name__ == '__main__':
     app_tg.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, 
                                    lambda update, context: update.message.reply_text("🤔 Please use /start to choose a style or send me a photo to pixelate.")))
-    
-    # 6. INICIA EL BOT DE TELEGRAM EN UN HILO SEPARADO
-    if RENDER_URL and TOKEN:
-        # La URL final donde Telegram debe enviar los mensajes
-        webhook_url = f"{RENDER_URL}/telegram_webhook"
-        
-        # Setea la URL del webhook de forma asíncrona
-        async def set_webhook_and_initialize(): # <- RENOMBRADO
-            # *** PASO CRÍTICO: Inicializar la aplicación ***
-            await app_tg.initialize() # <--- ¡AÑADIR ESTA LÍNEA!
-            
-            # Limpia cualquier configuración anterior
-            await app_tg.bot.delete_webhook() 
-            # Establece la nueva URL
-            await app_tg.bot.set_webhook(url=webhook_url)
-            print(f"*** Webhook de Telegram configurado en: {webhook_url} ***")
-
-        # Ejecuta la función asíncrona para configurar el webhook
-        try:
-            # Ejecuta la nueva función
-            asyncio.run(set_webhook_and_initialize()) 
-        except RuntimeError as e:
-            # Esto puede fallar si ya hay un loop corriendo, pero Render generalmente lo permite.
-            print(f"Advertencia: No se pudo configurar el webhook en el hilo principal: {e}")
-
 
     # 7. INICIA EL SERVIDOR WEB DE FLASK (en el hilo principal, escucha el puerto)
     port = int(os.environ.get("PORT", 8080))
-    # Para Render, el puerto debe ser el del entorno
     print(f"*** Flask Webhook Server running on port {port} at http://0.0.0.0:{port} ***")
     app_flask.run(host='0.0.0.0', port=port, debug=False)
